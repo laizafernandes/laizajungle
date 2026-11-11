@@ -17,6 +17,7 @@ export function createSqsClient(config: AppEnvConfig = loadEnvConfig()): SQSClie
 export interface SqsQueueVerification {
   wagerQueueUrl: string;
   wagerDlqUrl: string;
+  eventsQueueUrl: string;
   fifoEnabled: boolean;
   maxReceiveCount: number;
 }
@@ -25,12 +26,13 @@ export async function verifySqsQueues(
   client: SQSClient,
   config: AppEnvConfig = loadEnvConfig(),
 ): Promise<SqsQueueVerification> {
-  const [mainUrlRes, dlqUrlRes] = await Promise.all([
+  const [mainUrlRes, dlqUrlRes, eventsUrlRes] = await Promise.all([
     client.send(new GetQueueUrlCommand({ QueueName: config.sqs.wagerQueueName })),
     client.send(new GetQueueUrlCommand({ QueueName: config.sqs.wagerDlqName })),
+    client.send(new GetQueueUrlCommand({ QueueName: config.sqs.eventsQueueName })),
   ]);
 
-  if (!mainUrlRes.QueueUrl || !dlqUrlRes.QueueUrl) {
+  if (!mainUrlRes.QueueUrl || !dlqUrlRes.QueueUrl || !eventsUrlRes.QueueUrl) {
     throw new Error('Required SQS FIFO queue URLs were not returned by broker');
   }
 
@@ -56,6 +58,7 @@ export async function verifySqsQueues(
   return {
     wagerQueueUrl: mainUrlRes.QueueUrl,
     wagerDlqUrl: dlqUrlRes.QueueUrl,
+    eventsQueueUrl: eventsUrlRes.QueueUrl,
     fifoEnabled,
     maxReceiveCount,
   };

@@ -4,6 +4,7 @@ set -euo pipefail
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 MAIN_QUEUE="${SQS_WAGER_QUEUE_NAME:-wager-transactions.fifo}"
 DLQ_QUEUE="${SQS_WAGER_DLQ_NAME:-wager-transactions-dlq.fifo}"
+EVENTS_QUEUE="${SQS_EVENTS_QUEUE_NAME:-wager-events.fifo}"
 MAX_RECEIVE_COUNT="${SQS_MAX_RECEIVE_COUNT:-3}"
 
 echo "[localstack-init] Creating Dead Letter Queue (FIFO): ${DLQ_QUEUE}..."
@@ -28,6 +29,16 @@ awslocal sqs create-queue \
   --region "${REGION}" \
   --queue-name "${MAIN_QUEUE}" \
   --attributes "${ATTRIBUTES}" >/dev/null
+
+echo "[localstack-init] Creating Outbox Events Queue (FIFO): ${EVENTS_QUEUE}..."
+awslocal sqs create-queue \
+  --region "${REGION}" \
+  --queue-name "${EVENTS_QUEUE}" \
+  --attributes '{
+    "FifoQueue": "true",
+    "ContentBasedDeduplication": "false",
+    "MessageRetentionPeriod": "1209600"
+  }' >/dev/null
 
 echo "[localstack-init] SQS FIFO queues successfully provisioned:"
 awslocal sqs list-queues --region "${REGION}"

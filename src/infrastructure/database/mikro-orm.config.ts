@@ -2,6 +2,8 @@ import { Migrator } from '@mikro-orm/migrations';
 import { type Options, defineConfig } from '@mikro-orm/postgresql';
 import { MIGRATIONS_LIST } from '../../migrations/index';
 import { loadEnvConfig } from '../config/env.config';
+import { InboxMessageOrmEntity } from './entities/inbox-message.orm-entity';
+import { OutboxMessageOrmEntity } from './entities/outbox-message.orm-entity';
 import { WagerTransactionOrmEntity } from './entities/wager-transaction.orm-entity';
 import { WalletLedgerEntryOrmEntity } from './entities/wallet-ledger-entry.orm-entity';
 import { WalletOrmEntity } from './entities/wallet.orm-entity';
@@ -15,7 +17,13 @@ export function buildMikroOrmOptions(env: NodeJS.ProcessEnv = process.env): Opti
     user: config.db.user,
     password: config.db.password,
     dbName: config.db.name,
-    entities: [WalletOrmEntity, WagerTransactionOrmEntity, WalletLedgerEntryOrmEntity],
+    entities: [
+      WalletOrmEntity,
+      WagerTransactionOrmEntity,
+      WalletLedgerEntryOrmEntity,
+      InboxMessageOrmEntity,
+      OutboxMessageOrmEntity,
+    ],
     discovery: {
       warnWhenNoEntities: false,
     },

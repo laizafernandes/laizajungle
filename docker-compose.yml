@@ -30,6 +30,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       SQS_WAGER_QUEUE_NAME: ${SQS_WAGER_QUEUE_NAME:-wager-transactions.fifo}
       SQS_WAGER_DLQ_NAME: ${SQS_WAGER_DLQ_NAME:-wager-transactions-dlq.fifo}
+      SQS_EVENTS_QUEUE_NAME: ${SQS_EVENTS_QUEUE_NAME:-wager-events.fifo}
       SQS_MAX_RECEIVE_COUNT: ${SQS_MAX_RECEIVE_COUNT:-3}
     ports:
       - "4566:4566"
@@ -39,7 +40,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "awslocal sqs get-queue-url --queue-name ${SQS_WAGER_QUEUE_NAME:-wager-transactions.fifo} >/dev/null 2>&1 && awslocal sqs get-queue-url --queue-name ${SQS_WAGER_DLQ_NAME:-wager-transactions-dlq.fifo} >/dev/null 2>&1",
+          "awslocal sqs get-queue-url --queue-name ${SQS_WAGER_QUEUE_NAME:-wager-transactions.fifo} >/dev/null 2>&1 && awslocal sqs get-queue-url --queue-name ${SQS_WAGER_DLQ_NAME:-wager-transactions-dlq.fifo} >/dev/null 2>&1 && awslocal sqs get-queue-url --queue-name ${SQS_EVENTS_QUEUE_NAME:-wager-events.fifo} >/dev/null 2>&1",
         ]
       interval: 3s
       timeout: 5s

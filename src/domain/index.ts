@@ -1,4 +1,10 @@
 export {
+  InboxMessage,
+  type InboxMessageState,
+  type ReceiveInboxProps,
+} from './entities/inbox-message';
+export { OutboxMessage, type OutboxMessageState } from './entities/outbox-message';
+export {
   WagerTransaction,
   type CreateOpeningTransactionProps,
   type CreateWagerTransactionProps,
@@ -29,4 +35,18 @@ export {
   InvalidMoneyError,
   InvalidTransactionStateError,
 } from './errors/domain.error';
+export {
+  IntegrationEvent,
+  WagerTransactionPendingReference,
+  WagerTransactionProcessed,
+  WagerTransactionRejected,
+  WalletBalanceChanged,
+  type EventContext,
+  type IntegrationEventProps,
+  type SerializedIntegrationEvent,
+  type WagerTransactionPendingReferenceData,
+  type WagerTransactionProcessedData,
+  type WagerTransactionRejectedData,
+  type WalletBalanceChangedData,
+} from './events/integration-events';
 export { Money, type MoneyProps } from './value-objects/money';
