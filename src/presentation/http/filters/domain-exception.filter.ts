@@ -25,6 +25,7 @@ interface HttpResponse {
   status(code: number): { json(body: unknown): void };
 }
 import {
+  BalanceLimitExceededError,
   CurrencyMismatchError,
   DomainError,
   InsufficientBalanceError,
@@ -109,6 +110,7 @@ export class DomainExceptionFilter implements ExceptionFilter {
 
     if (
       exception instanceof InsufficientBalanceError ||
+      exception instanceof BalanceLimitExceededError ||
       exception instanceof CurrencyMismatchError ||
       exception instanceof InvalidTransactionStateError
     ) {

@@ -50,10 +50,10 @@ export const FIELD_MAX_LENGTH = {
   referenceExternalTransactionId: 255,
 } as const;
 
-const PERMANENT_PG_SQLSTATES: ReadonlySet<string> = new Set(['22001']);
+const PERMANENT_PG_SQLSTATES: ReadonlySet<string> = new Set(['22001', '22003']);
 
 /**
- * Erros de driver que nunca serão resolvidos por retentativa (ex.: 22001 value too long):
+ * Erros de driver que nunca serão resolvidos por retentativa (ex.: 22001 value too long, 22003 numeric field overflow):
  * percorre cause/previous/driverError como extractPgUniqueConstraint.
  */
 export function isPermanentPgError(error: unknown): boolean {

@@ -10,6 +10,10 @@ const UNSIGNED_DECIMAL_PATTERN = /^\d+(?:\.\d{1,2})?$/;
 const SIGNED_INTERNAL_DECIMAL_PATTERN = /^-?\d+(?:\.\d{1,2})?$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
+/** Limite máximo compatível com numeric(18,2) no PostgreSQL. */
+export const MAX_MONEY_AMOUNT = '9999999999999999.99';
+const MAX_MONEY_DECIMAL = new MoneyDecimal(MAX_MONEY_AMOUNT);
+
 export interface MoneyProps {
   amount: string;
   currency: string;
@@ -23,7 +27,7 @@ export class Money {
 
   /**
    * Parses an external contract MoneyProps.
-   * Rejects negative values, > 2 decimal places, scientific notation, NaN, Infinity, and empty strings.
+   * Rejects negative values, > 2 decimal places, scientific notation, NaN, Infinity, > numeric(18,2), and empty strings.
    */
   static from(props: MoneyProps): Money {
     if (!props || typeof props !== 'object') {
@@ -36,6 +40,9 @@ export class Money {
     const parsed = new MoneyDecimal(props.amount);
     if (!parsed.isFinite()) {
       throw new InvalidMoneyError(`Money amount must be finite: ${props.amount}`);
+    }
+    if (parsed.greaterThan(MAX_MONEY_DECIMAL)) {
+      throw new InvalidMoneyError(`Money amount exceeds maximum allowed (${MAX_MONEY_AMOUNT})`);
     }
 
     // Normalize -0.00 or 0 to canonical non-negative zero
@@ -94,6 +101,10 @@ export class Money {
   isLessThan(other: Money): boolean {
     this.assertSameCurrency(other);
     return this.value.lessThan(other.value);
+  }
+
+  exceedsMaxLimit(): boolean {
+    return this.value.greaterThan(MAX_MONEY_DECIMAL);
   }
 
   equals(other: Money): boolean {

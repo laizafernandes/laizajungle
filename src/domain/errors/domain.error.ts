@@ -48,3 +48,11 @@ export class InsufficientBalanceError extends DomainError {
     );
   }
 }
+
+export class BalanceLimitExceededError extends DomainError {
+  readonly code = 'BALANCE_LIMIT_EXCEEDED';
+
+  constructor(walletId: string, maxBalance: string) {
+    super(`Wallet ${walletId} balance cannot exceed ${maxBalance}`);
+  }
+}

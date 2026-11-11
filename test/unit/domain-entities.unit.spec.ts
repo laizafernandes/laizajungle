@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  BalanceLimitExceededError,
   CurrencyMismatchError,
   FailureCode,
   InsufficientBalanceError,
@@ -53,6 +54,15 @@ describe('Domain Entities Invariants (Unit)', () => {
     );
     expect(() => wallet.credit(Money.from({ amount: '10.00', currency: 'USD' }))).toThrow(
       CurrencyMismatchError,
+    );
+
+    const maxWallet = Wallet.open({
+      id: 'w-max',
+      playerId: 'p-1',
+      initialBalance: Money.from({ amount: '9999999999999999.99', currency: 'BRL' }),
+    });
+    expect(() => maxWallet.credit(Money.from({ amount: '0.01', currency: 'BRL' }))).toThrow(
+      BalanceLimitExceededError,
     );
   });
 

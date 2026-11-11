@@ -1,9 +1,10 @@
 import {
+  BalanceLimitExceededError,
   CurrencyMismatchError,
   InsufficientBalanceError,
   InvalidDomainArgumentError,
 } from '../errors/domain.error';
-import type { Money } from '../value-objects/money';
+import { MAX_MONEY_AMOUNT, type Money } from '../value-objects/money';
 
 export interface WalletState {
   id: string;
@@ -47,6 +48,9 @@ export class Wallet {
     }
     if (props.initialBalance.isNegative()) {
       throw new InvalidDomainArgumentError('Wallet initialBalance must not be negative');
+    }
+    if (props.initialBalance.exceedsMaxLimit()) {
+      throw new BalanceLimitExceededError(props.id, MAX_MONEY_AMOUNT);
     }
 
     const now = props.now ?? new Date();
@@ -112,6 +116,9 @@ export class Wallet {
 
     const balanceBefore = this._balance;
     const balanceAfter = this._balance.add(amount);
+    if (balanceAfter.exceedsMaxLimit()) {
+      throw new BalanceLimitExceededError(this.id, MAX_MONEY_AMOUNT);
+    }
     this._balance = balanceAfter;
     this._version += 1;
     this._updatedAt = at;

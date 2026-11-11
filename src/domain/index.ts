@@ -28,6 +28,7 @@ export {
   WagerTransactionStatus,
 } from './enums/wagering.enums';
 export {
+  BalanceLimitExceededError,
   CurrencyMismatchError,
   DomainError,
   InsufficientBalanceError,
@@ -49,4 +50,4 @@ export {
   type WagerTransactionRejectedData,
   type WalletBalanceChangedData,
 } from './events/integration-events';
-export { Money, type MoneyProps } from './value-objects/money';
+export { MAX_MONEY_AMOUNT, Money, type MoneyProps } from './value-objects/money';

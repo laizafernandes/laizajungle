@@ -68,6 +68,7 @@ describe('Money Value Object (Unit)', () => {
       '.50',
       'abc',
       '25,00',
+      '10000000000000000.00',
       25,
       null,
       undefined,

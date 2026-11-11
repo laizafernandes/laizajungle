@@ -2,10 +2,11 @@ import { describe, expect, it } from 'bun:test';
 import { isPermanentPgError } from '../../src/application/services/validation.helpers';
 
 describe('isPermanentPgError', () => {
-  it('trata SQLSTATE 22001 (value too long) como permanente, inclusive aninhado em cause/driverError', () => {
+  it('trata SQLSTATE 22001 (value too long) e 22003 (numeric field overflow) como permanentes, inclusive aninhados em cause/driverError', () => {
     expect(isPermanentPgError(Object.assign(new Error('x'), { code: '22001' }))).toBe(true);
+    expect(isPermanentPgError(Object.assign(new Error('x'), { code: '22003' }))).toBe(true);
     expect(isPermanentPgError({ message: 'wrap', driverError: { code: '22001' } })).toBe(true);
-    expect(isPermanentPgError({ cause: { code: '22001' } })).toBe(true);
+    expect(isPermanentPgError({ cause: { code: '22003' } })).toBe(true);
   });
 
   it('não classifica como permanente erros transitórios ou desconhecidos', () => {
