@@ -81,7 +81,15 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 
 ### Health Checks (abertos sem autenticação)
 - `GET /health/live` — Liveness probe (processo ativo e uptime).
-- `GET /health/ready` (e alias `GET /health`) — Readiness probe (executa `SELECT 1` no PostgreSQL via MikroORM e valida conectividade + existência das filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo` no AWS SQS).
+- `GET /health/ready` (e alias `GET /health`) — Readiness probe (executa `SELECT 1` no PostgreSQL via MikroORM e valida conectividade + existência das filas `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-events.fifo` no AWS SQS).
+
+---
+
+## Mensageria Assíncrona (SQS FIFO, Inbox e Outbox)
+
+- **Entrada**: fila `wager-transactions.fifo` (`RedrivePolicy` com `maxReceiveCount = 3` para `wager-transactions-dlq.fifo`), consumida por `SqsWagerConsumerService` agrupando lotes por `MessageGroupId = walletId` com concorrência limitada entre carteiras e ordenação sequencial intra-carteira.
+- **Deduplicação**: `inbox_messages` (`consumer_name`, `message_id`) gravada na mesma transação SQL que o processamento da transação; `DeleteMessage` só executa após o `COMMIT`.
+- **Saída (`Transactional Outbox`)**: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference` persistidos em `outbox_messages` na mesma transação e publicados em `wager-events.fifo` por `OutboxPublisherWorker` (`FOR UPDATE SKIP LOCKED`, backoff exponencial, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId`).
 
 ---
 
@@ -92,21 +100,22 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 │   └── CHALLENGE.md               # Especificação completa do desafio
 ├── docker/
 │   └── localstack/
-│       └── init-sqs.sh            # Provisionamento automático das filas SQS FIFO + DLQ
+│       └── init-sqs.sh            # Provisionamento automático das filas SQS FIFO + DLQ + Eventos
 ├── scripts/
 │   ├── wait-for-infra.ts          # Polling de prontidão de Postgres + SQS antes dos testes
 │   └── migrations.ts              # CLI de execução de migrations reversíveis
 ├── src/
-│   ├── domain/                    # Entidades ricas, Value Objects (Money), regras e portas (puro TS)
-│   ├── application/               # Use cases compartilhados (HTTP + SQS) e portas
-│   ├── infrastructure/            # MikroORM, Postgres, SQS client, config, health checks
-│   ├── presentation/              # Controllers HTTP, consumers SQS, exception filters
+│   ├── domain/                    # Entidades ricas, Value Objects (Money), eventos e regras (puro TS)
+│   ├── application/               # Use cases compartilhados (HTTP + SQS), Outbox publisher e portas
+│   ├── infrastructure/            # MikroORM, Postgres, SQS client/publisher, workers, config, health
+│   ├── presentation/              # Controllers HTTP, consumer SQS FIFO, exception filters
 │   └── migrations/                # Migrations versionadas e reversíveis (up / down)
 ├── test/
 │   ├── unit/                      # Testes de unidade isolados e rápidos
 │   ├── integration/               # Testes de integração com PostgreSQL e LocalStack reais
-│   └── concurrency/               # Testes de corrida e paralelismo real
+│   └── concurrency/               # Testes de corrida e paralelismo real (HTTP + SQS + Outbox)
 ├── AGENTS.md                      # Regras fixas e fluxo de trabalho por sprint
 ├── ARCHITECTURE.md                # Decisões arquiteturais, trade-offs e justificativas
 └── docker-compose.yml             # Orquestração local com imagens fixadas
 ```
+
