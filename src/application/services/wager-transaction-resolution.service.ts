@@ -2,15 +2,21 @@ import {
   FailureCode,
   LedgerDirection,
   type MoneyProps,
+  OutboxMessage,
   type WagerTransaction,
   WagerTransactionKind,
+  WagerTransactionPendingReference,
+  WagerTransactionProcessed,
+  WagerTransactionRejected,
   WagerTransactionStatus,
   type Wallet,
+  WalletBalanceChanged,
   WalletLedgerEntry,
 } from '../../domain/index';
 import { ExternalTransactionConflictError } from '../errors/application.error';
 import type {
   IdGeneratorPort,
+  OutboxRepositoryPort,
   TransactionContext,
   WagerTransactionRepositoryPort,
   WalletLedgerRepositoryPort,
@@ -24,6 +30,11 @@ export interface ResolvedExecutionOutcome {
   status: WagerTransactionStatus;
   balance: MoneyProps;
   failureCode?: FailureCode;
+}
+
+export interface TransactionEventMetadata {
+  correlationId?: string;
+  causationId?: string;
 }
 
 type ReferenceCheckResult =
@@ -42,6 +53,7 @@ export class WagerTransactionResolutionService {
     private readonly walletLedgerRepository: WalletLedgerRepositoryPort,
     private readonly idGenerator: IdGeneratorPort,
     private readonly pendingReferencePolicy: PendingReferencePolicy,
+    private readonly outboxRepository?: OutboxRepositoryPort,
   ) {}
 
   async resolveAndApply(
@@ -50,21 +62,38 @@ export class WagerTransactionResolutionService {
     wagerTx: WagerTransaction,
     now: Date,
     mode: 'insert' | 'update',
+    eventMeta?: TransactionEventMetadata,
   ): Promise<ResolvedExecutionOutcome> {
     const basicRejection = this.checkBasicPreconditions(wallet, wagerTx);
     if (basicRejection) {
       wagerTx.reject(basicRejection, now, wallet.balance);
       await this.persistTransaction(tx, wagerTx, mode);
+      await this.emitRejectedEvent(
+        tx,
+        wagerTx,
+        basicRejection,
+        wallet.balance.toJSON(),
+        now,
+        eventMeta,
+      );
       return this.toOutcome(wagerTx, wallet);
     }
 
     const refCheck = await this.evaluateReference(tx, wallet, wagerTx);
     if (refCheck.kind === 'missing') {
-      return this.handleMissingReference(tx, wallet, wagerTx, now, mode);
+      return this.handleMissingReference(tx, wallet, wagerTx, now, mode, eventMeta);
     }
     if (refCheck.kind === 'reject') {
       wagerTx.reject(refCheck.code, now, wallet.balance);
       await this.persistTransaction(tx, wagerTx, mode);
+      await this.emitRejectedEvent(
+        tx,
+        wagerTx,
+        refCheck.code,
+        wallet.balance.toJSON(),
+        now,
+        eventMeta,
+      );
       return this.toOutcome(wagerTx, wallet);
     }
 
@@ -73,6 +102,7 @@ export class WagerTransactionResolutionService {
     if (!wagerTx.affectsBalance()) {
       wagerTx.markProcessed(referenceTx?.id, now, wallet.balance);
       await this.persistTransaction(tx, wagerTx, mode);
+      await this.emitProcessedEvents(tx, wallet, wagerTx, undefined, now, eventMeta);
       return this.toOutcome(wagerTx, wallet);
     }
 
@@ -84,6 +114,7 @@ export class WagerTransactionResolutionService {
           : FailureCode.ReversalNegativeBalance;
       wagerTx.reject(code, now, wallet.balance);
       await this.persistTransaction(tx, wagerTx, mode);
+      await this.emitRejectedEvent(tx, wagerTx, code, wallet.balance.toJSON(), now, eventMeta);
       return this.toOutcome(wagerTx, wallet);
     }
 
@@ -119,6 +150,7 @@ export class WagerTransactionResolutionService {
       throw error;
     }
     await this.walletLedgerRepository.insert(tx, ledgerEntry);
+    await this.emitProcessedEvents(tx, wallet, wagerTx, ledgerEntry, now, eventMeta);
 
     return {
       transactionId: wagerTx.id,
@@ -230,11 +262,13 @@ export class WagerTransactionResolutionService {
     wagerTx: WagerTransaction,
     now: Date,
     mode: 'insert' | 'update',
+    eventMeta?: TransactionEventMetadata,
   ): Promise<ResolvedExecutionOutcome> {
     if (wagerTx.status === WagerTransactionStatus.Pending) {
       const nextRetryAt = this.pendingReferencePolicy.computeNextRetryAt(0, now);
       wagerTx.markPendingReference(nextRetryAt);
       await this.persistTransaction(tx, wagerTx, mode);
+      await this.emitPendingReferenceEvent(tx, wagerTx, nextRetryAt, now, eventMeta);
       return this.toOutcome(wagerTx, wallet);
     }
 
@@ -243,6 +277,14 @@ export class WagerTransactionResolutionService {
       // Section 7.1: once retry limit or TTL expires, transition to REJECTED with explicit code
       wagerTx.reject(FailureCode.ReferenceNotFoundExpired, now, wallet.balance);
       await this.persistTransaction(tx, wagerTx, mode);
+      await this.emitRejectedEvent(
+        tx,
+        wagerTx,
+        FailureCode.ReferenceNotFoundExpired,
+        wallet.balance.toJSON(),
+        now,
+        eventMeta,
+      );
       return this.toOutcome(wagerTx, wallet);
     }
 
@@ -250,6 +292,104 @@ export class WagerTransactionResolutionService {
     wagerTx.scheduleReferenceRetry(nextRetryAt);
     await this.persistTransaction(tx, wagerTx, mode);
     return this.toOutcome(wagerTx, wallet);
+  }
+
+  private async emitProcessedEvents(
+    tx: TransactionContext,
+    wallet: Wallet,
+    wagerTx: WagerTransaction,
+    ledgerEntry: WalletLedgerEntry | undefined,
+    occurredAt: Date,
+    eventMeta?: TransactionEventMetadata,
+  ): Promise<void> {
+    if (!this.outboxRepository) {
+      return;
+    }
+
+    const correlationId = eventMeta?.correlationId ?? wagerTx.id;
+    const causationId = eventMeta?.causationId ?? wagerTx.id;
+    const resultingBalance = (wagerTx.resultingBalance ?? wallet.balance).toJSON();
+
+    const outboxMessages = [
+      OutboxMessage.enqueue(
+        WagerTransactionProcessed.from(wagerTx, resultingBalance, {
+          eventId: this.idGenerator.nextId(),
+          correlationId,
+          causationId,
+          occurredAt,
+        }),
+      ),
+    ];
+
+    if (ledgerEntry) {
+      outboxMessages.push(
+        OutboxMessage.enqueue(
+          WalletBalanceChanged.from(wallet, ledgerEntry, {
+            eventId: this.idGenerator.nextId(),
+            correlationId,
+            causationId,
+            occurredAt,
+          }),
+        ),
+      );
+    }
+
+    await this.outboxRepository.insertMany(tx, outboxMessages);
+  }
+
+  private async emitRejectedEvent(
+    tx: TransactionContext,
+    wagerTx: WagerTransaction,
+    failureCode: FailureCode,
+    resultingBalance: MoneyProps,
+    occurredAt: Date,
+    eventMeta?: TransactionEventMetadata,
+  ): Promise<void> {
+    if (!this.outboxRepository) {
+      return;
+    }
+
+    const correlationId = eventMeta?.correlationId ?? wagerTx.id;
+    const causationId = eventMeta?.causationId ?? wagerTx.id;
+
+    await this.outboxRepository.insert(
+      tx,
+      OutboxMessage.enqueue(
+        WagerTransactionRejected.from(wagerTx, failureCode, resultingBalance, {
+          eventId: this.idGenerator.nextId(),
+          correlationId,
+          causationId,
+          occurredAt,
+        }),
+      ),
+    );
+  }
+
+  private async emitPendingReferenceEvent(
+    tx: TransactionContext,
+    wagerTx: WagerTransaction,
+    nextRetryAt: Date,
+    occurredAt: Date,
+    eventMeta?: TransactionEventMetadata,
+  ): Promise<void> {
+    if (!this.outboxRepository) {
+      return;
+    }
+
+    const correlationId = eventMeta?.correlationId ?? wagerTx.id;
+    const causationId = eventMeta?.causationId ?? wagerTx.id;
+
+    await this.outboxRepository.insert(
+      tx,
+      OutboxMessage.enqueue(
+        WagerTransactionPendingReference.from(wagerTx, nextRetryAt, {
+          eventId: this.idGenerator.nextId(),
+          correlationId,
+          causationId,
+          occurredAt,
+        }),
+      ),
+    );
   }
 
   private async persistTransaction(

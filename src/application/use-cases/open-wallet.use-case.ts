@@ -2,14 +2,18 @@ import {
   LedgerDirection,
   Money,
   type MoneyProps,
+  OutboxMessage,
   WagerTransaction,
+  WagerTransactionProcessed,
   Wallet,
+  WalletBalanceChanged,
   WalletLedgerEntry,
 } from '../../domain/index';
 import { DuplicateWalletError, ValidationApplicationError } from '../errors/application.error';
 import type {
   ClockPort,
   IdGeneratorPort,
+  OutboxRepositoryPort,
   UnitOfWorkPort,
   WagerTransactionRepositoryPort,
   WalletLedgerRepositoryPort,
@@ -37,6 +41,7 @@ export class OpenWalletUseCase {
     private readonly walletLedgerRepository: WalletLedgerRepositoryPort,
     private readonly idGenerator: IdGeneratorPort,
     private readonly clock: ClockPort,
+    private readonly outboxRepository?: OutboxRepositoryPort,
   ) {}
 
   async execute(command: OpenWalletCommand): Promise<OpenWalletResult> {
@@ -80,6 +85,27 @@ export class OpenWalletUseCase {
 
           await this.wagerTransactionRepository.insert(tx, openingTx);
           await this.walletLedgerRepository.insert(tx, ledgerEntry);
+
+          if (this.outboxRepository) {
+            await this.outboxRepository.insertMany(tx, [
+              OutboxMessage.enqueue(
+                WagerTransactionProcessed.from(openingTx, initialBalance.toJSON(), {
+                  eventId: this.idGenerator.nextId(),
+                  correlationId: openingTx.id,
+                  causationId: openingTx.id,
+                  occurredAt: now,
+                }),
+              ),
+              OutboxMessage.enqueue(
+                WalletBalanceChanged.from(wallet, ledgerEntry, {
+                  eventId: this.idGenerator.nextId(),
+                  correlationId: openingTx.id,
+                  causationId: openingTx.id,
+                  occurredAt: now,
+                }),
+              ),
+            ]);
+          }
         }
       });
     } catch (error) {

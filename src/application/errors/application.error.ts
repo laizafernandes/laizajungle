@@ -78,3 +78,13 @@ export class WalletLockTimeoutError extends TransientInfrastructureError {
     );
   }
 }
+
+export class InboxPayloadMismatchError extends ApplicationError {
+  readonly errorCode = 'INBOX_PAYLOAD_MISMATCH';
+
+  constructor(consumerName: string, messageId: string) {
+    super(
+      `Inbox message (${consumerName}, ${messageId}) already received with a different payloadHash`,
+    );
+  }
+}

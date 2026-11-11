@@ -3,6 +3,7 @@ export {
   DuplicateWalletError,
   ExternalTransactionConflictError,
   IdempotencyConflictError,
+  InboxPayloadMismatchError,
   TransactionNotFoundError,
   TransientInfrastructureError,
   ValidationApplicationError,
@@ -16,14 +17,20 @@ export type {
 } from './ports/health-checker.port';
 export {
   CLOCK_PORT,
+  EVENT_PUBLISHER_PORT,
   ID_GENERATOR_PORT,
+  INBOX_REPOSITORY_PORT,
+  OUTBOX_REPOSITORY_PORT,
   PENDING_REFERENCE_POLICY_PORT,
   UNIT_OF_WORK_PORT,
   WAGER_TRANSACTION_REPOSITORY_PORT,
   WALLET_LEDGER_REPOSITORY_PORT,
   WALLET_REPOSITORY_PORT,
   type ClockPort,
+  type EventPublisherPort,
   type IdGeneratorPort,
+  type InboxRepositoryPort,
+  type OutboxRepositoryPort,
   type PendingReferenceCandidate,
   type TransactionContext,
   type UnitOfWorkPort,
@@ -43,6 +50,7 @@ export {
 export {
   WagerTransactionResolutionService,
   type ResolvedExecutionOutcome,
+  type TransactionEventMetadata,
 } from './services/wager-transaction-resolution.service';
 export {
   OpenWalletUseCase,
@@ -50,12 +58,20 @@ export {
   type OpenWalletResult,
 } from './use-cases/open-wallet.use-case';
 export {
+  OutboxPublisherUseCase,
+  type OutboxPublisherFaultHooks,
+  type OutboxPublisherOptions,
+  type PublishOutboxBatchOptions,
+  type PublishOutboxBatchSummary,
+} from './use-cases/outbox-publisher.use-case';
+export {
   ProcessPendingReferencesUseCase,
   type ProcessPendingBatchOptions,
   type ProcessPendingBatchSummary,
 } from './use-cases/process-pending-references.use-case';
 export {
   ProcessWagerTransactionUseCase,
+  type InboxExecutionContext,
   type ProcessWagerTransactionCommand,
   type ProcessWagerTransactionResult,
 } from './use-cases/process-wager-transaction.use-case';

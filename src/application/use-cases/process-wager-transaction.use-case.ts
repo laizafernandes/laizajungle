@@ -1,5 +1,6 @@
 import {
   type FailureCode,
+  InboxMessage,
   Money,
   type MoneyProps,
   WagerTransaction,
@@ -9,12 +10,14 @@ import {
 import {
   ExternalTransactionConflictError,
   IdempotencyConflictError,
+  InboxPayloadMismatchError,
   ValidationApplicationError,
   WalletNotFoundError,
 } from '../errors/application.error';
 import type {
   ClockPort,
   IdGeneratorPort,
+  InboxRepositoryPort,
   TransactionContext,
   UnitOfWorkPort,
   WagerTransactionRepositoryPort,
@@ -28,6 +31,13 @@ import {
 } from '../services/validation.helpers';
 import type { WagerTransactionResolutionService } from '../services/wager-transaction-resolution.service';
 
+export interface InboxExecutionContext {
+  consumerName: string;
+  messageId: string;
+  payloadHash: string;
+  receivedAt?: Date;
+}
+
 export interface ProcessWagerTransactionCommand {
   idempotencyKey: string;
   providerId: string;
@@ -39,6 +49,9 @@ export interface ProcessWagerTransactionCommand {
   kind: WagerTransactionKind;
   money: MoneyProps;
   referenceExternalTransactionId?: string;
+  inboxContext?: InboxExecutionContext;
+  correlationId?: string;
+  causationId?: string;
 }
 
 export interface ProcessWagerTransactionResult {
@@ -65,6 +78,7 @@ export class ProcessWagerTransactionUseCase {
     private readonly resolutionService: WagerTransactionResolutionService,
     private readonly idGenerator: IdGeneratorPort,
     private readonly clock: ClockPort,
+    private readonly inboxRepository?: InboxRepositoryPort,
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
@@ -95,7 +109,8 @@ export class ProcessWagerTransactionUseCase {
 
       if (
         constraint?.includes('uq_wager_tx_idempotency_key') ||
-        constraint?.includes('uq_wager_tx_provider_external')
+        constraint?.includes('uq_wager_tx_provider_external') ||
+        constraint?.includes('pk_inbox_messages')
       ) {
         return this.resolveUniqueConstraintCollision(command, payloadHash);
       }
@@ -110,13 +125,42 @@ export class ProcessWagerTransactionUseCase {
     money: Money,
     payloadHash: string,
   ): Promise<ProcessWagerTransactionResult> {
+    const now = this.clock.now();
+
+    // 0. Inbox deduplication fast-path (when invoked by SQS consumer)
+    if (command.inboxContext && this.inboxRepository) {
+      const existingInbox = await this.inboxRepository.findByKey(
+        tx,
+        command.inboxContext.consumerName,
+        command.inboxContext.messageId,
+      );
+      if (existingInbox) {
+        if (!existingInbox.matchesPayload(command.inboxContext.payloadHash)) {
+          throw new InboxPayloadMismatchError(
+            command.inboxContext.consumerName,
+            command.inboxContext.messageId,
+          );
+        }
+
+        const existingTx = await this.wagerTransactionRepository.findByIdempotencyKey(
+          tx,
+          command.idempotencyKey,
+        );
+        if (existingTx) {
+          return this.buildReplayResult(tx, existingTx, payloadHash);
+        }
+      }
+    }
+
     // 1. Pre-lock fast-path: replays of already-committed transactions return without waiting on hot-wallet lock.
     const existingPreLock = await this.wagerTransactionRepository.findByIdempotencyKey(
       tx,
       command.idempotencyKey,
     );
     if (existingPreLock) {
-      return this.buildReplayResult(tx, existingPreLock, payloadHash);
+      const replay = await this.buildReplayResult(tx, existingPreLock, payloadHash);
+      await this.recordInboxProcessedIfPresent(tx, command, now);
+      return replay;
     }
 
     // 2. Acquire per-wallet pessimistic write lock (SELECT ... FOR UPDATE) — Global Lock Order: Wallet -> WagerTransaction.
@@ -135,12 +179,13 @@ export class ProcessWagerTransactionUseCase {
     );
     if (existingPostLock) {
       if (existingPostLock.idempotencyKey === command.idempotencyKey) {
-        return this.buildReplayResult(tx, existingPostLock, payloadHash);
+        const replay = await this.buildReplayResult(tx, existingPostLock, payloadHash);
+        await this.recordInboxProcessedIfPresent(tx, command, now);
+        return replay;
       }
       throw new ExternalTransactionConflictError(command.providerId, command.externalTransactionId);
     }
 
-    const now = this.clock.now();
     const wagerTx = WagerTransaction.create({
       id: this.idGenerator.nextId(),
       providerId: command.providerId,
@@ -163,11 +208,37 @@ export class ProcessWagerTransactionUseCase {
       wagerTx,
       now,
       'insert',
+      {
+        correlationId: command.correlationId ?? command.inboxContext?.messageId ?? wagerTx.id,
+        causationId: command.causationId ?? command.inboxContext?.messageId ?? wagerTx.id,
+      },
     );
+
+    await this.recordInboxProcessedIfPresent(tx, command, now);
+
     return {
       ...outcome,
       idempotentReplay: false,
     };
+  }
+
+  private async recordInboxProcessedIfPresent(
+    tx: TransactionContext,
+    command: ProcessWagerTransactionCommand,
+    now: Date,
+  ): Promise<void> {
+    if (!command.inboxContext || !this.inboxRepository) {
+      return;
+    }
+
+    const inboxMsg = InboxMessage.receive({
+      messageId: command.inboxContext.messageId,
+      consumerName: command.inboxContext.consumerName,
+      payloadHash: command.inboxContext.payloadHash,
+      receivedAt: command.inboxContext.receivedAt ?? now,
+    });
+    inboxMsg.markProcessed(now);
+    await this.inboxRepository.insert(tx, inboxMsg);
   }
 
   private async resolveUniqueConstraintCollision(
@@ -177,6 +248,20 @@ export class ProcessWagerTransactionUseCase {
     const maxReads = 5;
     for (let attempt = 0; attempt < maxReads; attempt++) {
       const winner = await this.unitOfWork.runInTransaction(async (tx) => {
+        if (command.inboxContext && this.inboxRepository) {
+          const existingInbox = await this.inboxRepository.findByKey(
+            tx,
+            command.inboxContext.consumerName,
+            command.inboxContext.messageId,
+          );
+          if (existingInbox && !existingInbox.matchesPayload(command.inboxContext.payloadHash)) {
+            throw new InboxPayloadMismatchError(
+              command.inboxContext.consumerName,
+              command.inboxContext.messageId,
+            );
+          }
+        }
+
         const byKey = await this.wagerTransactionRepository.findByIdempotencyKey(
           tx,
           command.idempotencyKey,

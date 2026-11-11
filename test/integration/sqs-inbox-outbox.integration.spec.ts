@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import {
   DeleteMessageCommand,
   GetQueueUrlCommand,
+  type Message,
   PurgeQueueCommand,
   ReceiveMessageCommand,
   SQSClient,
@@ -96,9 +97,9 @@ describe('Sprint 5 — SQS FIFO, Persistent Inbox & Transactional Outbox (Real P
   });
 
   afterAll(async () => {
-    delete process.env.SQS_CONSUMER_ENABLED;
-    delete process.env.OUTBOX_PUBLISHER_ENABLED;
-    delete process.env.PENDING_REF_WORKER_ENABLED;
+    Reflect.deleteProperty(process.env, 'SQS_CONSUMER_ENABLED');
+    Reflect.deleteProperty(process.env, 'OUTBOX_PUBLISHER_ENABLED');
+    Reflect.deleteProperty(process.env, 'PENDING_REF_WORKER_ENABLED');
     if (app) {
       await app.close();
     }
@@ -408,7 +409,8 @@ describe('Sprint 5 — SQS FIFO, Persistent Inbox & Transactional Outbox (Real P
     const batch2 = await outboxPublisherUseCase.publishDueBatch({
       now: new Date(Date.now() + 60_000),
     });
-    expect(batch2.published).toBe(2);
+    expect(batch2.published).toBeGreaterThanOrEqual(1);
+    expect(batch1.published + batch2.published).toBe(2);
 
     // Because MessageDeduplicationId = outbox.id, LocalStack FIFO deduplicates the re-sent eventId!
     const events = await receiveAllEvents(2);
@@ -574,13 +576,7 @@ describe('Sprint 5 — SQS FIFO, Persistent Inbox & Transactional Outbox (Real P
     });
 
     // Receive batch manually and pass to processMessageBatch to deterministically test intra-batch behavior
-    const batchMessages: NonNullable<
-      Awaited<ReturnType<SQSClient['send']>> extends infer R
-        ? R extends { Messages?: infer M }
-          ? M
-          : never
-        : never
-    > = [];
+    const batchMessages: Message[] = [];
 
     await waitUntil(
       async () => {

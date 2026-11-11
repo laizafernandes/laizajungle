@@ -1,4 +1,6 @@
 import type {
+  InboxMessage,
+  OutboxMessage,
   WagerTransaction,
   WagerTransactionKind,
   Wallet,
@@ -17,6 +19,9 @@ export const UNIT_OF_WORK_PORT = Symbol('UNIT_OF_WORK_PORT');
 export const WALLET_REPOSITORY_PORT = Symbol('WALLET_REPOSITORY_PORT');
 export const WAGER_TRANSACTION_REPOSITORY_PORT = Symbol('WAGER_TRANSACTION_REPOSITORY_PORT');
 export const WALLET_LEDGER_REPOSITORY_PORT = Symbol('WALLET_LEDGER_REPOSITORY_PORT');
+export const INBOX_REPOSITORY_PORT = Symbol('INBOX_REPOSITORY_PORT');
+export const OUTBOX_REPOSITORY_PORT = Symbol('OUTBOX_REPOSITORY_PORT');
+export const EVENT_PUBLISHER_PORT = Symbol('EVENT_PUBLISHER_PORT');
 export const ID_GENERATOR_PORT = Symbol('ID_GENERATOR_PORT');
 export const CLOCK_PORT = Symbol('CLOCK_PORT');
 export const PENDING_REFERENCE_POLICY_PORT = Symbol('PENDING_REFERENCE_POLICY_PORT');
@@ -77,6 +82,27 @@ export interface WalletLedgerRepositoryPort {
     cursor?: LedgerCursor,
   ): Promise<WalletLedgerEntry[]>;
   findAllByWallet(tx: TransactionContext, walletId: string): Promise<WalletLedgerEntry[]>;
+}
+
+export interface InboxRepositoryPort {
+  findByKey(
+    tx: TransactionContext,
+    consumerName: string,
+    messageId: string,
+  ): Promise<InboxMessage | null>;
+  insert(tx: TransactionContext, message: InboxMessage): Promise<void>;
+  save(tx: TransactionContext, message: InboxMessage): Promise<void>;
+}
+
+export interface OutboxRepositoryPort {
+  insert(tx: TransactionContext, message: OutboxMessage): Promise<void>;
+  insertMany(tx: TransactionContext, messages: OutboxMessage[]): Promise<void>;
+  lockDueBatch(tx: TransactionContext, now: Date, limit: number): Promise<OutboxMessage[]>;
+  save(tx: TransactionContext, message: OutboxMessage): Promise<void>;
+}
+
+export interface EventPublisherPort {
+  publish(message: OutboxMessage): Promise<void>;
 }
 
 export interface IdGeneratorPort {

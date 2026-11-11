@@ -18,10 +18,7 @@ import { Test } from '@nestjs/testing';
 import Decimal from 'decimal.js';
 import { waitForInfrastructure } from '../../scripts/wait-for-infra';
 import { AppModule } from '../../src/app.module';
-import {
-  type OpenWalletResult,
-  OutboxPublisherUseCase,
-} from '../../src/application/index';
+import { type OpenWalletResult, OutboxPublisherUseCase } from '../../src/application/index';
 import { type SerializedIntegrationEvent, WagerTransactionKind } from '../../src/domain/index';
 import { loadEnvConfig } from '../../src/infrastructure/config/env.config';
 import { SQS_CLIENT_TOKEN } from '../../src/infrastructure/messaging/sqs.client';
@@ -117,9 +114,9 @@ describe('Sprint 5 — Concurrent SQS Consumers & Outbox Publishers (Real Postgr
   });
 
   afterAll(async () => {
-    delete process.env.SQS_CONSUMER_ENABLED;
-    delete process.env.OUTBOX_PUBLISHER_ENABLED;
-    delete process.env.PENDING_REF_WORKER_ENABLED;
+    Reflect.deleteProperty(process.env, 'SQS_CONSUMER_ENABLED');
+    Reflect.deleteProperty(process.env, 'OUTBOX_PUBLISHER_ENABLED');
+    Reflect.deleteProperty(process.env, 'PENDING_REF_WORKER_ENABLED');
     if (app) {
       await app.close();
     }

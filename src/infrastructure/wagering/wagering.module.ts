@@ -2,12 +2,19 @@ import { Module } from '@nestjs/common';
 import {
   CLOCK_PORT,
   type ClockPort,
+  EVENT_PUBLISHER_PORT,
+  type EventPublisherPort,
   GetWagerTransactionUseCase,
   GetWalletLedgerUseCase,
   GetWalletUseCase,
   ID_GENERATOR_PORT,
+  INBOX_REPOSITORY_PORT,
   type IdGeneratorPort,
+  type InboxRepositoryPort,
+  OUTBOX_REPOSITORY_PORT,
   OpenWalletUseCase,
+  OutboxPublisherUseCase,
+  type OutboxRepositoryPort,
   PENDING_REFERENCE_POLICY_PORT,
   PendingReferencePolicy,
   ProcessPendingReferencesUseCase,
@@ -26,12 +33,17 @@ import {
 import { ProvidersWageringController } from '../../presentation/http/controllers/providers-wagering.controller';
 import { WageringController } from '../../presentation/http/controllers/wagering.controller';
 import { WalletsController } from '../../presentation/http/controllers/wallets.controller';
+import { SqsWagerConsumerService } from '../../presentation/sqs/sqs-wager-consumer.service';
 import { loadEnvConfig } from '../config/env.config';
+import { MikroOrmInboxRepository } from '../database/adapters/mikro-orm-inbox.repository';
+import { MikroOrmOutboxRepository } from '../database/adapters/mikro-orm-outbox.repository';
 import { MikroOrmUnitOfWork } from '../database/adapters/mikro-orm-unit-of-work';
 import { MikroOrmWagerTransactionRepository } from '../database/adapters/mikro-orm-wager-transaction.repository';
 import { MikroOrmWalletLedgerRepository } from '../database/adapters/mikro-orm-wallet-ledger.repository';
 import { MikroOrmWalletRepository } from '../database/adapters/mikro-orm-wallet.repository';
+import { SqsOutboxEventPublisher } from '../messaging/sqs-outbox-event.publisher';
 import { SystemClock, UuidV7IdGenerator } from '../system/system-adapters';
+import { OutboxPublisherWorker } from '../workers/outbox-publisher.worker';
 import { PendingReferenceWorker } from '../workers/pending-reference.worker';
 
 @Module({
@@ -52,6 +64,18 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
     {
       provide: WALLET_LEDGER_REPOSITORY_PORT,
       useClass: MikroOrmWalletLedgerRepository,
+    },
+    {
+      provide: INBOX_REPOSITORY_PORT,
+      useClass: MikroOrmInboxRepository,
+    },
+    {
+      provide: OUTBOX_REPOSITORY_PORT,
+      useClass: MikroOrmOutboxRepository,
+    },
+    {
+      provide: EVENT_PUBLISHER_PORT,
+      useClass: SqsOutboxEventPublisher,
     },
     {
       provide: ID_GENERATOR_PORT,
@@ -81,6 +105,7 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         WALLET_LEDGER_REPOSITORY_PORT,
         ID_GENERATOR_PORT,
         PENDING_REFERENCE_POLICY_PORT,
+        OUTBOX_REPOSITORY_PORT,
       ],
       useFactory: (
         walletRepo: WalletRepositoryPort,
@@ -88,8 +113,16 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         ledgerRepo: WalletLedgerRepositoryPort,
         idGen: IdGeneratorPort,
         policy: PendingReferencePolicy,
+        outboxRepo: OutboxRepositoryPort,
       ) =>
-        new WagerTransactionResolutionService(walletRepo, wagerTxRepo, ledgerRepo, idGen, policy),
+        new WagerTransactionResolutionService(
+          walletRepo,
+          wagerTxRepo,
+          ledgerRepo,
+          idGen,
+          policy,
+          outboxRepo,
+        ),
     },
     {
       provide: OpenWalletUseCase,
@@ -100,6 +133,7 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         WALLET_LEDGER_REPOSITORY_PORT,
         ID_GENERATOR_PORT,
         CLOCK_PORT,
+        OUTBOX_REPOSITORY_PORT,
       ],
       useFactory: (
         unitOfWork: UnitOfWorkPort,
@@ -108,7 +142,17 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         ledgerRepo: WalletLedgerRepositoryPort,
         idGen: IdGeneratorPort,
         clock: ClockPort,
-      ) => new OpenWalletUseCase(unitOfWork, walletRepo, wagerTxRepo, ledgerRepo, idGen, clock),
+        outboxRepo: OutboxRepositoryPort,
+      ) =>
+        new OpenWalletUseCase(
+          unitOfWork,
+          walletRepo,
+          wagerTxRepo,
+          ledgerRepo,
+          idGen,
+          clock,
+          outboxRepo,
+        ),
     },
     {
       provide: ProcessWagerTransactionUseCase,
@@ -119,6 +163,7 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         WagerTransactionResolutionService,
         ID_GENERATOR_PORT,
         CLOCK_PORT,
+        INBOX_REPOSITORY_PORT,
       ],
       useFactory: (
         unitOfWork: UnitOfWorkPort,
@@ -127,6 +172,7 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         resolutionService: WagerTransactionResolutionService,
         idGen: IdGeneratorPort,
         clock: ClockPort,
+        inboxRepo: InboxRepositoryPort,
       ) =>
         new ProcessWagerTransactionUseCase(
           unitOfWork,
@@ -135,6 +181,7 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
           resolutionService,
           idGen,
           clock,
+          inboxRepo,
         ),
     },
     {
@@ -161,6 +208,23 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
           clock,
           loadEnvConfig().pendingReference.batchSize,
         ),
+    },
+    {
+      provide: OutboxPublisherUseCase,
+      inject: [UNIT_OF_WORK_PORT, OUTBOX_REPOSITORY_PORT, EVENT_PUBLISHER_PORT, CLOCK_PORT],
+      useFactory: (
+        unitOfWork: UnitOfWorkPort,
+        outboxRepo: OutboxRepositoryPort,
+        eventPublisher: EventPublisherPort,
+        clock: ClockPort,
+      ) => {
+        const outboxCfg = loadEnvConfig().outbox;
+        return new OutboxPublisherUseCase(unitOfWork, outboxRepo, eventPublisher, clock, {
+          defaultBatchSize: outboxCfg.batchSize,
+          baseRetryDelayMs: outboxCfg.baseDelayMs,
+          maxRetryDelayMs: outboxCfg.maxDelayMs,
+        });
+      },
     },
     {
       provide: GetWalletUseCase,
@@ -193,11 +257,15 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
       ) => new ReconcileWalletUseCase(unitOfWork, walletRepo, ledgerRepo),
     },
     PendingReferenceWorker,
+    OutboxPublisherWorker,
+    SqsWagerConsumerService,
   ],
   exports: [
     OpenWalletUseCase,
     ProcessWagerTransactionUseCase,
     ProcessPendingReferencesUseCase,
+    OutboxPublisherUseCase,
+    SqsWagerConsumerService,
     GetWalletUseCase,
     GetWalletLedgerUseCase,
     GetWagerTransactionUseCase,

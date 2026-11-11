@@ -97,6 +97,7 @@ export class ProcessPendingReferencesUseCase {
         pendingTx,
         now,
         'update',
+        { correlationId: pendingTx.id, causationId: pendingTx.id },
       );
 
       if (result.status === WagerTransactionStatus.Processed) {

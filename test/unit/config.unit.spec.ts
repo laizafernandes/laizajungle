@@ -18,7 +18,13 @@ describe('Environment Configuration (Unit)', () => {
     expect(config.pendingReference.workerEnabled).toBe(true);
     expect(config.sqs.wagerQueueName).toBe('wager-transactions.fifo');
     expect(config.sqs.wagerDlqName).toBe('wager-transactions-dlq.fifo');
+    expect(config.sqs.eventsQueueName).toBe('wager-events.fifo');
     expect(config.sqs.maxReceiveCount).toBe(3);
+    expect(config.sqs.consumerConcurrency).toBe(5);
+    expect(config.sqs.consumerBatchSize).toBe(10);
+    expect(config.sqs.consumerVisibilityTimeoutSec).toBe(30);
+    expect(config.outbox.publisherEnabled).toBe(true);
+    expect(config.outbox.batchSize).toBe(50);
   });
 
   it('rejects invalid numeric port, pool, and lock timeout configurations', () => {
