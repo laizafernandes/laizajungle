@@ -28,6 +28,7 @@ import {
   ValidationApplicationError,
   WalletNotFoundError,
 } from '../../application/index';
+import { isPermanentPgError } from '../../application/services/validation.helpers';
 import { DomainError, Money, type MoneyProps, WagerTransactionKind } from '../../domain/index';
 import { type AppEnvConfig, loadEnvConfig } from '../../infrastructure/config/env.config';
 import { SQS_CLIENT_TOKEN } from '../../infrastructure/messaging/sqs.client';
@@ -461,7 +462,8 @@ export class SqsWagerConsumerService implements OnModuleInit, OnModuleDestroy {
       error instanceof ExternalTransactionConflictError ||
       error instanceof InboxPayloadMismatchError ||
       error instanceof WalletNotFoundError ||
-      error instanceof DomainError
+      error instanceof DomainError ||
+      isPermanentPgError(error)
     );
   }
 

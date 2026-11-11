@@ -31,6 +31,7 @@ import type {
 } from '../ports/wagering.ports';
 import { CanonicalPayloadHasher } from '../services/canonical-payload-hasher';
 import {
+  FIELD_MAX_LENGTH,
   extractPgUniqueConstraint,
   isNonEmptyString,
   isValidUuid,
@@ -454,6 +455,27 @@ export class ProcessWagerTransactionUseCase {
       throw new ValidationApplicationError(
         `${command.kind} requires referenceExternalTransactionId`,
       );
+    }
+    const lengthChecked: Array<[string, string | undefined, number]> = [
+      ['Idempotency-Key', command.idempotencyKey, FIELD_MAX_LENGTH.idempotencyKey],
+      ['providerId', command.providerId, FIELD_MAX_LENGTH.providerId],
+      [
+        'externalTransactionId',
+        command.externalTransactionId,
+        FIELD_MAX_LENGTH.externalTransactionId,
+      ],
+      ['roundId', command.roundId, FIELD_MAX_LENGTH.roundId],
+      ['gameId', command.gameId, FIELD_MAX_LENGTH.gameId],
+      [
+        'referenceExternalTransactionId',
+        command.referenceExternalTransactionId,
+        FIELD_MAX_LENGTH.referenceExternalTransactionId,
+      ],
+    ];
+    for (const [name, value, max] of lengthChecked) {
+      if (typeof value === 'string' && value.length > max) {
+        throw new ValidationApplicationError(`${name} must have at most ${max} characters`);
+      }
     }
   }
 }
