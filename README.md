@@ -24,17 +24,23 @@ Serviço financeiro distribuído para processamento de transações de apostas (
    cp .env.example .env
    ```
 
-3. **Suba a infraestrutura (PostgreSQL 16.4 + LocalStack 3.7.2 com filas SQS FIFO e DLQ)**:
+3. **Suba a infraestrutura (PostgreSQL 16.4 + LocalStack 3.7.2 com filas SQS FIFO)**:
    ```bash
-   docker compose up -d
+   docker compose up -d --wait
    ```
    O hook `/etc/localstack/init/ready.d/init-sqs.sh` provisiona automaticamente:
    - `wager-transactions-dlq.fifo` (Dead-Letter Queue FIFO)
-   - `wager-transactions.fifo` (Fila principal FIFO com `RedrivePolicy` apontando para a DLQ após `maxReceiveCount = 3`)
+   - `wager-transactions.fifo` (Fila principal FIFO com `RedrivePolicy` para a DLQ após `maxReceiveCount = 3`)
+   - `wager-events.fifo` (Fila FIFO dedicada para publicação dos eventos de integração do Outbox)
 
-4. **Rode os testes de integração (aguarda automaticamente os containers ficarem saudáveis)**:
+4. **Aplique as migrations e valide o projeto**:
    ```bash
-   bun run test:integration
+   bun run migration:up
+   bun run lint
+   bun run typecheck
+   bun test
+   bun run test:concurrency
+   bun run test:load
    ```
 
 5. **Inicie a aplicação em modo desenvolvimento**:
@@ -61,7 +67,7 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 | `bun run test:unit` | Executa apenas testes unitários (`test/unit`) |
 | `bun run test:integration` | Aguarda infraestrutura e executa testes de integração reais (`test/integration`) |
 | `bun run test:concurrency` | Aguarda infraestrutura e executa testes de concorrência (`test/concurrency`) |
-| `bun run test:load` | Executa harness de teste de carga |
+| `bun run test:load` | Executa teste de carga HTTP + SQS (`scripts/load-test.ts`) e reconcilia 100% das carteiras |
 | `bun run migration:up` | Aplica migrations pendentes no PostgreSQL |
 | `bun run migration:down` | Reverte a última migration aplicada |
 | `bun run migration:status` | Lista migrations aplicadas e pendentes |
@@ -71,17 +77,21 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 ## Endpoints HTTP
 
 ### Wallets, Transações, Consultas e Reconciliação
+> Rotas de domínio passam pelo ponto de extensão explícito `NoopProviderAuthGuard` / `ProviderIdentityPort` (Seção 2 de `docs/CHALLENGE.md`).
+
 - `POST /wallets` — Cria carteira (`201 Created`; se `initialBalance > 0`, cria `OPENING` + `CREDIT` no ledger).
 - `GET /wallets/:walletId` — Consulta saldo e versão da carteira.
 - `GET /wallets/:walletId/ledger?cursor=...&limit=50` — Lista entradas imutáveis do ledger com cursor opaco estável.
-- `POST /wallets/:walletId/reconciliation` — Compara saldo materializado vs soma do ledger (sem correção silenciosa).
-- `POST /wagering/transactions` — Submete `BET`, `WIN`, `LOSS`, `REFUND` ou `ROLLBACK` (`Idempotency-Key` obrigatório; retorna `200`, `202` se `PENDING_REFERENCE`, `422` se `REJECTED`, `409` se conflito).
+- `POST /wallets/:walletId/reconciliation` — Compara saldo materializado vs soma do ledger (sem correção silenciosa; incrementa métrica e emite log em caso de divergência).
+- `POST /wagering/transactions` — Submete `BET`, `WIN`, `LOSS`, `REFUND` ou `ROLLBACK` (`Idempotency-Key` obrigatório; aceita `x-correlation-id` opcional; retorna `200`, `202` se `PENDING_REFERENCE`, `422` se `REJECTED`, `409` se conflito, `503` com `Retry-After` em `WALLET_LOCK_TIMEOUT`).
 - `GET /wagering/transactions/:transactionId` — Consulta transação por ID interno.
 - `GET /providers/:providerId/wagering/transactions/:externalTransactionId` — Consulta transação por `(providerId, externalTransactionId)`.
 
-### Health Checks (abertos sem autenticação)
+### Health Checks & Observabilidade (abertos sem autenticação)
 - `GET /health/live` — Liveness probe (processo ativo e uptime).
-- `GET /health/ready` (e alias `GET /health`) — Readiness probe (executa `SELECT 1` no PostgreSQL via MikroORM e valida conectividade + existência das filas `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-events.fifo` no AWS SQS).
+- `GET /health/ready` (e alias `GET /health`) — Readiness probe (`SELECT 1` no PostgreSQL via MikroORM e verificação de conectividade + atributos FIFO/RedrivePolicy de `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-events.fifo` no AWS SQS).
+- `GET /metrics` — Exposição Prometheus (`text/plain; version=0.0.4`) ou JSON (`?format=json`) com contadores de transações por status/tipo, duplicatas, retries, roteamentos DLQ, conflitos de lock, divergências de reconciliação, histograma de latência, outbox lag e profundidade aproximada da DLQ (com cache de 3s e tolerância a falha isolada de Postgres/SQS).
+- **Logs estruturados (JSON)**: emitidos por `JsonStructuredLogger` contendo `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` e `idempotencyKey`, com redação automática impedindo vazamento de valores monetários (`amount`, `money`, `balance`, `storedBalance`) ou segredos.
 
 ---
 
@@ -90,6 +100,25 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 - **Entrada**: fila `wager-transactions.fifo` (`RedrivePolicy` com `maxReceiveCount = 3` para `wager-transactions-dlq.fifo`), consumida por `SqsWagerConsumerService` agrupando lotes por `MessageGroupId = walletId` com concorrência limitada entre carteiras e ordenação sequencial intra-carteira.
 - **Deduplicação**: `inbox_messages` (`consumer_name`, `message_id`) gravada na mesma transação SQL que o processamento da transação; `DeleteMessage` só executa após o `COMMIT`.
 - **Saída (`Transactional Outbox`)**: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference` persistidos em `outbox_messages` na mesma transação e publicados em `wager-events.fifo` por `OutboxPublisherWorker` (`FOR UPDATE SKIP LOCKED`, backoff exponencial, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId`).
+
+---
+
+## Variáveis de Ambiente (`.env.example`)
+
+| Variável | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `NODE_ENV` / `PORT` / `LOG_LEVEL` | `development` / `3000` / `info` | Ambiente, porta HTTP e nível de log |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | `127.0.0.1` / `5432` / `jungle` / `jungle_secret` / `jungle_wagering` | Conexão PostgreSQL |
+| `DB_POOL_MIN` / `DB_POOL_MAX` | `2` / `20` | Limites do pool de conexões MikroORM |
+| `DB_LOCK_TIMEOUT_MS` | `3000` | Timeout transacional `SET LOCAL lock_timeout` (ms) para `SELECT ... FOR UPDATE` |
+| `PENDING_REF_WORKER_ENABLED` / `POLL_INTERVAL_MS` / `BATCH_SIZE` | `true` / `1000` / `50` | Worker de reprocessamento de `PENDING_REFERENCE` |
+| `PENDING_REF_BASE_DELAY_MS` / `MAX_DELAY_MS` / `MAX_ATTEMPTS` / `TTL_MS` | `1000` / `30000` / `5` / `300000` | Backoff exponencial e limite de exaustão (5 tentativas ou 5 min) |
+| `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `SQS_ENDPOINT` | `us-east-1` / `test` / `test` / `http://127.0.0.1:4566` | Cliente SQS apontando para LocalStack |
+| `SQS_WAGER_QUEUE_NAME` / `SQS_WAGER_DLQ_NAME` / `SQS_EVENTS_QUEUE_NAME` | `wager-transactions.fifo` / `wager-transactions-dlq.fifo` / `wager-events.fifo` | Filas FIFO de entrada, DLQ e saída de eventos |
+| `SQS_MAX_RECEIVE_COUNT` / `SQS_CONSUMER_VISIBILITY_TIMEOUT_SEC` | `3` / `30` | Limite antes da DLQ e visibilidade (`>> lock_timeout`) |
+| `SQS_CONSUMER_ENABLED` / `BATCH_SIZE` / `CONCURRENCY` / `POLL_INTERVAL_MS` | `true` / `10` / `5` / `50` | Parâmetros do `SqsWagerConsumerService` |
+| `OUTBOX_PUBLISHER_ENABLED` / `POLL_INTERVAL_MS` / `BATCH_SIZE` / `BASE_DELAY_MS` / `MAX_DELAY_MS` | `true` / `200` / `50` / `500` / `30000` | Publicador da tabela `outbox_messages` para `wager-events.fifo` |
+| `LOAD_COLD_WALLETS` / `LOAD_HOT_WALLETS` / `LOAD_HTTP_OPS` / `LOAD_HTTP_CONCURRENCY` / `LOAD_SQS_OPS` | `30` / `3` / `600` / `24` / `90` | Sobrescritas opcionais de intensidade para `bun run test:load` |
 
 ---
 

@@ -17,7 +17,29 @@ O projeto é organizado em quatro camadas concêntricas com regra estrita de dep
 3. **`src/infrastructure/`**:
    - Adaptadores concretos para PostgreSQL via **MikroORM**, mensageria via **AWS SDK v3 (`@aws-sdk/client-sqs`)**, workers agendados (Outbox publisher, Pending Reference retry), health checks e observabilidade.
 4. **`src/presentation/`**:
-   - Adaptadores de entrada: Controllers HTTP, SQS Consumer e filtros globais de exceção.
+   - Adaptadores de entrada: Controllers HTTP, Guard no-op de extensão Auth, SQS Consumer, `/metrics` e filtros globais de exceção.
+
+```text
+  HTTP Client (Provider)                       SQS FIFO (wager-transactions.fifo)
+         │                                                   │
+         ▼ [NoopProviderAuthGuard]                           ▼ [SqsWagerConsumerService]
+  WageringController                                 Group by MessageGroupId = walletId
+         │                                                   │ (ack somente pós-COMMIT;
+         └──────────────► ProcessWagerTransactionUseCase ◄───┘  DLQ em falha permanente)
+                                     │
+                     Transação SQL Única (MikroORM + Postgres)
+                     ├─ 0. inbox_messages (PK consumer_name, message_id)
+                     ├─ 1. Idempotency check (idempotency_key)
+                     ├─ 2. SELECT ... FOR UPDATE (Wallet lock, timeout 3s)
+                     ├─ 3. Regras (BET/WIN/LOSS/REFUND/ROLLBACK / PENDING_REF)
+                     ├─ 4. wallet_ledger_entries (imutável via TRIGGER)
+                     └─ 5. outbox_messages (4 IntegrationEvents)
+                                     │
+                 ┌───────────────────┴───────────────────┐
+                 ▼                                       ▼
+     PendingReferenceWorker                    OutboxPublisherWorker
+  (Wallet -> Tx FOR UPDATE SKIP LOCKED)     (FOR UPDATE SKIP LOCKED -> wager-events.fifo)
+```
 
 ---
 
@@ -48,7 +70,7 @@ O projeto é organizado em quatro camadas concêntricas com regra estrita de dep
 - **Trade-off**: Adiciona ~50ms de verificação no boot da suíte de integração, mas elimina falhas intermitentes ("flaky tests") quando o avaliador executa `docker compose up -d && bun run test:integration` do zero.
 
 ### 2.4. Autenticação (Seção 2)
-- **Decisão**: De acordo com a Seção 2 do desafio, optamos por focar o timebox nos critérios avaliados (correção financeira, concorrência, idempotência e mensageria) e deixar a autenticação desacoplada através de uma porta/guarda explícita (`ProviderAuthGuard` / `ProviderIdentityPort`), mantendo `/health/live` e `/health/ready` abertos. Em produção, essa porta validaria tokens JWT OAuth2/OIDC emitidos por um IdP externo (Keycloak ou Zitadel) via JWKS caching e mTLS no gateway dos provedores.
+- **Decisão (`2A`)**: De acordo com a Seção 2 do desafio, optamos por focar o timebox nos critérios pontuados (correção financeira, concorrência, idempotência e mensageria) e deixamos o ponto de extensão explícito no código por meio de [`ProviderIdentityPort`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/application/ports/observability.ports.ts) e [`NoopProviderAuthGuard`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/presentation/http/guards/noop-provider-auth.guard.ts) acoplados aos controllers de domínio (`WalletsController`, `WageringController`, `ProvidersWageringController`), mantendo `/health/live`, `/health/ready` e `/metrics` abertos. Em produção, basta registrar um adapter OIDC/JWT + assinatura HMAC para Keycloak ou Zitadel sem alterar os use cases.
 
 ---
 
@@ -279,4 +301,83 @@ As duas tabelas formam **duas camadas complementares de deduplicação**:
 2. **Por que `wager-events.fifo` em vez de SNS FIFO?** O desafio provisiona apenas o SQS LocalStack (`init-sqs.sh`) e exige `wager-transactions.fifo` + DLQ FIFO na entrada. Uma fila FIFO dedicada mantém `MessageGroupId = aggregateId` e `MessageDeduplicationId = eventId` nativamente no mesmo broker, sem impedir futura substituição da implementação de `EventPublisherPort` por SNS/EventBridge.
 3. **Como lidar com a janela de 5 minutos da deduplicação FIFO do SQS?** Se um publisher ficar desconectado por mais de 5 minutos após um crash exatamente pós-`SendMessage`, o SQS pode aceitar a segunda entrega; por isso o Outbox garante semântica *at-least-once* com `eventId` imutável no payload, transferindo a idempotência de longo prazo ao consumidor do evento.
 4. **Por que `polling` (`waitUntil`) nos testes de mensageria?** Evita `sleep` cego e flakiness sob carga de CI/LocalStack: os testes consultam estado real em intervalos curtos (50ms) até convergência determinística ou timeout explícito.
+
+---
+
+## 8. Sprint 6 — Observabilidade, Teste de Carga, Riscos e Auditoria Final (Seção 14)
+
+### 8.1. Observabilidade (Seção 12 & Seção 9)
+- **Logs estruturados com correlação e redação estrita (`JsonStructuredLogger`)**:
+  - `WageringController`, `WalletsController` e `SqsWagerConsumerService` propagam `correlationId` (`x-correlation-id` ou UUIDv7 gerado na entrada HTTP; `messageId` na entrada SQS) e emitem eventos JSON estruturados contendo `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` e `idempotencyKey`.
+  - Uma política de sanitização recursiva (`SENSITIVE_OR_FINANCIAL_KEYS`) descarta chaves financeiras e credenciais (`amount`, `money`, `balance`, `storedBalance`, `calculatedBalance`, `difference`, `initialBalance`, `authorization`, `token`, `secret`, `payload`, `body`). Inclusive o evento `wallet_reconciliation_mismatch` em `ReconcileWalletUseCase` registra apenas `consistent: false`, `walletId`, `correlationId` e `checkedEntries`, preservando os valores monetários apenas na resposta HTTP da reconciliação.
+  - Provado em `test/unit/observability.unit.spec.ts` e `test/integration/observability.integration.spec.ts`.
+- **Métricas de baixa cardinalidade (`PrometheusMetricsRegistry` + `GET /metrics`, Decisão `1A` + `3A`)**:
+  - Endpoint `GET /metrics` expõe formato Prometheus (`text/plain; version=0.0.4`) e JSON (`?format=json`) sem autenticação.
+  - **Restrição explícita contra explosão de cardinalidade**: rótulos são estritamente limitados a dimensões de domínio/infraestrutura (`kind`, `status`, `channel`, `mechanism`, `component`, `reason`, `source`, `consistent`, `state`, `dependency`). Uma trava ativa (`assertAllowedLabels`) lança erro se IDs (`walletId`, `playerId`, `transactionId`, `providerId`, `idempotencyKey`, `messageId`) forem adicionados aos rótulos.
+  - Cobertura de métricas:
+    - `wager_transactions_total{kind,status}` e histograma `wager_processing_duration_ms`;
+    - `wager_duplicates_total{channel,mechanism}` e `wager_retries_total{component}`;
+    - `wager_dlq_routed_total{reason}` + gauge `wager_sqs_dlq_messages_approximate{state}` com cache curto (`3s`);
+    - `wager_lock_conflicts_total{source}` e `wager_reconciliation_mismatches_total`;
+    - `wager_outbox_pending_count` e `wager_outbox_oldest_pending_lag_ms`.
+  - **Tolerância a falhas**: leitores externos (`readOutboxLag`, `readDlqDepth`) são capturados individualmente; se PostgreSQL ou SQS estiverem indisponíveis durante um scrape, `/metrics` continua respondendo HTTP `200` contabilizando `wager_metrics_scrape_errors_total{dependency}`.
+- **Health checks separados**: `GET /health/live` (processo e uptime) e `GET /health/ready` (`SELECT 1` + verificação das filas `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-events.fifo`).
+
+---
+
+### 8.2. Teste de Carga (`bun run test:load`) — Relatório Honesto
+- **Script**: `scripts/load-test.ts` executado contra instância real NestJS + PostgreSQL 16.4 + LocalStack 3.7.2 (`Bun 1.4.4`, `DB_POOL_MAX=20`, `DB_LOCK_TIMEOUT_MS=3000`).
+- **Metodologia**:
+  - `33` carteiras (`30` carteiras regulares com `1000.00 BRL` + `3` *hot wallets* com `2000.00 BRL` concentrando ~40% da carga HTTP);
+  - `600` operações HTTP com concorrência `24` (`BET`, `WIN`, `REFUND` e ~20% de replays com mesma `Idempotency-Key`) + `90` mensagens SQS simultâneas (incluindo duplicatas com mesmo `messageId`) enquanto `PendingReferenceWorker`, `SqsWagerConsumerService` e `OutboxPublisherWorker` rodam normalmente.
+- **Resultados reais medidos**:
+  - **Duração da fase HTTP**: `3142.63 ms` — **Throughput**: `190.92 req/s`;
+  - **Latência HTTP**: `p50 = 111.26 ms`, `p95 = 245.93 ms`, `p99 = 312.63 ms`, `max = 476.90 ms`;
+  - **Distribuição de status HTTP**: `543` × `200 OK`, `57` × `422 Unprocessable Entity` (`REFERENCE_ALREADY_REVERSED` esperado nas múltiplas tentativas de `REFUND` sobre a `BET` semente), `0` × `503` (`0%` de lock timeout nessa carga), `0` erros inesperados;
+  - **Duplicatas barradas pelas métricas**: `115` no canal HTTP (`idempotency_key`) e `13` no canal SQS (`inbox`);
+  - **Outbox pós-drenagem**: `pendingCount = 0`, `oldestLagMs = 0`;
+  - **Invariantes verificadas em 100% das carteiras**: `33/33` consistentes na reconciliação (`wallet.balance == ledgerBalance`, `difference = "0.00"`), `0` saldos negativos, `0` lançamentos duplicados no ledger.
+- **Limitações honestas do experimento**:
+  1. **Single-host in-process**: o harness roda em `1` processo NestJS em `127.0.0.1`; escalabilidade multi-instância real (3 processos separados disputando a mesma carteira e 3 consumers/publishers simultâneos) foi comprovada nos testes de concorrência dedicada (`test:concurrency`), não no `test:load`.
+  2. **Vazão do Outbox Publisher**: como `OutboxPublisherUseCase` faz `SendMessageCommand` unitário por evento em sequência (lote `50` a cada `200ms`), um burst de >1.000 eventos levou alguns segundos adicionais para drenar até lag zero após o fim do tráfego HTTP.
+  3. **Taxa zero de `503`**: com transações curtas em Postgres local (~10–25ms), `concurrency=24` sobre `3` hot wallets não atingiu `DB_LOCK_TIMEOUT_MS=3000ms` (o cenário de saturação e resposta `503 Retry-After` é exercitado determinísticamente no `Scenario 7` de `test:concurrency`).
+
+---
+
+### 8.3. O que NÃO foi feito, Riscos Conhecidos e Próximos Passos
+- **Autenticação completa em IdP (Seção 2)**: implementado apenas o ponto de extensão (`ProviderIdentityPort` + `NoopProviderAuthGuard`) em vez de subir Keycloak/Zitadel; **Risco**: endpoints aceitam chamadas sem assinatura se expostos diretamente na internet até plugar adapter OIDC/HMAC. **Próximo passo**: implementar `OidcProviderIdentityAdapter` com verificação JWKS e rate-limiting na borda.
+- **Envio em lote (`SendMessageBatch`) no Outbox**: `SqsOutboxEventPublisher` envia 1 evento por `SendMessage`. **Próximo passo**: agrupar até 10 eventos por `SendMessageBatchCommand` para reduzir latência de dreno de outbox em picos.
+- **Ordem estrita de eventos entre múltiplos publishers**: documentado no item `7.5`; consumidores devem ordenar por `occurredAt`/`walletVersion`, ou evoluir o lock do publisher para particionamento por `aggregate_id`.
+- **Ledger de partidas dobradas (double-entry)**: conforme Seção 6.4, mantido modelo single-wallet ledger auditável e imutável; contas contábeis de contrapartida (`house`/`provider`) ficam como evolução natural de BI financeiro.
+- **OpenTelemetry / Grafana**: deixado explicitamente fora por ser opcional na Seção 12, substituído por logs JSON correlacionados + `/metrics` compatível com Prometheus.
+
+---
+
+### 8.4. Auditoria Final — Tabela de Pontuação e Falhas Eliminatórias (Seção 14)
+
+| Área / Critério (Pontos) | Status | Evidência Concreta no Repositório & Lacunas Honestas |
+| :--- | :--- | :--- |
+| **Correção financeira (20 pts)** — `Money`, saldo, ledger, reversões, reconciliação | **Atendido** | [`Money`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/domain/value-objects/money.ts) (`decimal.js`, strings `"0.00"`), constraints CHECK/trigger em [`Migration202611100001`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/migrations/Migration202611100001_InitialWageringSchema.ts), [`WagerTransactionResolutionService`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/application/services/wager-transaction-resolution.service.ts), [`ReconcileWalletUseCase`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/application/use-cases/reconcile-wallet.use-case.ts); provado em `money.unit.spec.ts`, `reversals.unit.spec.ts`, `reversals.integration.spec.ts`. *Nota*: reconciliação soma entradas em memória via `Money`; carteiras com milhões de linhas exigiriam checkpoints periódicos. |
+| **Concorrência (20 pts)** — lost updates, hot wallet, múltiplas instâncias, locks | **Atendido** | Lock pessimista por wallet (`SELECT ... FOR UPDATE`, `SET LOCAL lock_timeout`), ordem global única `Wallet -> WagerTransaction` contra AB-BA deadlocks; provado em [`wagering-concurrency.concurrency.spec.ts`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/test/concurrency/wagering-concurrency.concurrency.spec.ts) (inclui cenário obrigatório 100/80+80=20, 50 paralelas, 3 processos NestJS reais e `503 Retry-After`) e [`reversals-concurrency.concurrency.spec.ts`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/test/concurrency/reversals-concurrency.concurrency.spec.ts). |
+| **Idempotência (15 pts)** — dedup persistente, replay, payload conflitante | **Atendido** | [`CanonicalPayloadHasher`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/application/services/canonical-payload-hasher.ts), `uq_wager_tx_idempotency_key` + `uq_wager_tx_provider_external`, `resulting_balance_amount` preservado para replay fiel e tratamento de corrida `23505` em [`ProcessWagerTransactionUseCase`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/application/use-cases/process-wager-transaction.use-case.ts); provado em `http-wagering.integration.spec.ts` e cenário 50x paralelo. |
+| **Mensageria e falhas (15 pts)** — inbox, outbox, retry, DLQ, crash recovery, shutdown | **Atendido** | [`SqsWagerConsumerService`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/presentation/sqs/sqs-wager-consumer.service.ts), [`OutboxPublisherUseCase`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/application/use-cases/outbox-publisher.use-case.ts), [`Migration202611110002`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/migrations/Migration202611110002_InboxAndOutboxSchema.ts), shutdown `OnModuleDestroy`, DLQ FIFO (`maxReceiveCount=3`) + devolução de visibilidade em erro intra-lote; provado em [`sqs-inbox-outbox.integration.spec.ts`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/test/integration/sqs-inbox-outbox.integration.spec.ts) e [`sqs-outbox-concurrency.concurrency.spec.ts`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/test/concurrency/sqs-outbox-concurrency.concurrency.spec.ts). |
+| **Modelagem e arquitetura (10 pts)** — invariantes encapsuladas, boundaries, portas | **Atendido** | Domínio puro sem Nest/ORM em `src/domain/`, construtores privados + `create/open/rehydrate`, use case único HTTP+SQS, portas pequenas em `src/application/ports/`, ponto explícito [`NoopProviderAuthGuard`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/presentation/http/guards/noop-provider-auth.guard.ts). *Lacuna consciente*: Auth real em IdP não implementada (aceito pela Seção 2). |
+| **Testes (10 pts)** — integração real, races, determinismo, cobertura de falhas | **Atendido** | 100% PostgreSQL 16.4 + LocalStack 3.7.2 reais (zero mocks de DB/SQS), ganchos determinísticos de crash entre commit/ack e envio/markPublished, polling (`waitUntil`) sem `sleep` cego, `test:unit` + `test:integration` + `test:concurrency` + `test:load` verdes. |
+| **Observabilidade (5 pts)** — logs, métricas, health checks, diagnóstico | **Atendido** | [`JsonStructuredLogger`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/infrastructure/observability/json-structured-logger.ts) (correlação + zero valores monetários), [`PrometheusMetricsRegistry`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/src/infrastructure/observability/prometheus-metrics-registry.ts) + `GET /metrics` (sem IDs nos rótulos, cache curto, tolerante a falhas) e `GET /health/live` + `/health/ready`; provado em `observability.unit.spec.ts` e `observability.integration.spec.ts`. |
+| **Documentação (5 pts)** — `README.md` + `ARCHITECTURE.md` | **Atendido** | [`README.md`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/README.md) com setup, comandos, endpoints e env vars; `ARCHITECTURE.md` consolidado com diagramas, trade-offs, relatório honesto de carga e checklist de auditoria. |
+| **Diferencial opcional** — `bun run test:load` | **Atendido** | [`scripts/load-test.ts`](file:///Users/laizafernandesguimaraes/ponderada/laizajungle/scripts/load-test.ts) executado do zero com números reais e limitações na Seção 8.2. |
+
+#### Verificação de Falhas Eliminatórias (Seção 14)
+
+| Falha Eliminatória | Verificação | Evidência |
+| :--- | :--- | :--- |
+| `number` para dinheiro | **Eliminada** | `Money` usa `decimal.js`; colunas `numeric(18,2)` mapeadas como `string`; contratos JSON validam strings decimais (`money.unit.spec.ts`). |
+| Saldo negativo causado por race | **Eliminada** | Lock `FOR UPDATE` por `walletId` + `CHECK (balance_amount >= 0)` no banco; `Scenario 1–4`, `Scenario 6` e `test:load` terminam com `0` saldos negativos. |
+| Débito ou crédito duplicado | **Eliminada** | `uq_wager_tx_idempotency_key`, `uq_wager_tx_provider_external`, `uq_ledger_wallet_tx`, `uq_wager_tx_single_reversal_per_kind` e `pk_inbox_messages`; provado com 50x paralelo e crash entre commit e ack. |
+| Idempotência apenas em memória | **Eliminada** | Zero cache em memória; 100% persistida em PostgreSQL (`wager_transactions` + `inbox_messages`). |
+| Solução correta somente com 1 instância | **Eliminada** | `Scenario 6` (3 processos NestJS independentes), `reversals-concurrency` (2 runners `SKIP LOCKED`) e `sqs-outbox-concurrency` (3 consumers + 3 publishers simultâneos). |
+| Publicação de evento antes do commit | **Eliminada** | `OutboxMessage` inserido dentro de `UnitOfWork.runInTransaction`; `OutboxPublisherWorker` lê apenas linhas já confirmadas e marca `published_at` somente após `SendMessage` (`sqs-inbox-outbox.integration.spec.ts`). |
+| Ausência de ledger auditável | **Eliminada** | `wallet_ledger_entries` com trigger PostgreSQL proibindo `UPDATE`/`DELETE`, `CHECK` aritmético de `CREDIT`/`DEBIT` e endpoint `POST /wallets/:walletId/reconciliation`. |
+| Testes substituindo Postgres/SQS por mocks | **Eliminada** | Todos os testes de `test/integration`, `test/concurrency` e `scripts/load-test.ts` executam contra containers reais `postgres:16.4-alpine` e `localstack/localstack:3.7.2`. |
+
 
