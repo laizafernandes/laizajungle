@@ -11,6 +11,11 @@ describe('Environment Configuration (Unit)', () => {
     expect(config.db.poolMin).toBe(2);
     expect(config.db.poolMax).toBe(20);
     expect(config.db.lockTimeoutMs).toBe(3000);
+    expect(config.pendingReference.baseDelayMs).toBe(1000);
+    expect(config.pendingReference.maxDelayMs).toBe(30_000);
+    expect(config.pendingReference.maxAttempts).toBe(5);
+    expect(config.pendingReference.ttlMs).toBe(300_000);
+    expect(config.pendingReference.workerEnabled).toBe(true);
     expect(config.sqs.wagerQueueName).toBe('wager-transactions.fifo');
     expect(config.sqs.wagerDlqName).toBe('wager-transactions-dlq.fifo');
     expect(config.sqs.maxReceiveCount).toBe(3);

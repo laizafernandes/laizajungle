@@ -28,7 +28,7 @@ describe('Sprint 2 — HTTP Wagering Flow & Persistent Idempotency (Real Postgre
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    await app.listen(0);
+    await app.listen(0, '127.0.0.1');
 
     const server = app.getHttpServer() as { address: () => { port: number } };
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -56,7 +56,12 @@ describe('Sprint 2 — HTTP Wagering Flow & Persistent Idempotency (Real Postgre
         initialBalance: { amount, currency },
       }),
     });
-    return { status: res.status, body: (await res.json()) as OpenWalletResult & ErrorBody };
+    const raw = await res.text();
+    try {
+      return { status: res.status, body: JSON.parse(raw) as OpenWalletResult & ErrorBody };
+    } catch {
+      throw new Error(`Non-JSON response (${res.status}) from ${baseUrl}: ${raw}`);
+    }
   }
 
   async function submitTransaction(

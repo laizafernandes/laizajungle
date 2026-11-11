@@ -10,6 +10,7 @@ import {
   DuplicateWalletError,
   ExternalTransactionConflictError,
   IdempotencyConflictError,
+  TransactionNotFoundError,
   TransientInfrastructureError,
   ValidationApplicationError,
   WalletNotFoundError,
@@ -80,7 +81,7 @@ export class DomainExceptionFilter implements ExceptionFilter {
       };
     }
 
-    if (exception instanceof WalletNotFoundError) {
+    if (exception instanceof WalletNotFoundError || exception instanceof TransactionNotFoundError) {
       return {
         statusCode: HttpStatus.NOT_FOUND,
         errorCode: exception.errorCode,

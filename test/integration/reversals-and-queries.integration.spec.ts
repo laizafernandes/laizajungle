@@ -33,7 +33,7 @@ describe('Sprint 4 — Reversals, PENDING_REFERENCE, Queries & Reconciliation (R
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    await app.listen(0);
+    await app.listen(0, '127.0.0.1');
 
     const server = app.getHttpServer() as { address: () => { port: number } };
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -432,9 +432,7 @@ describe('Sprint 4 — Reversals, PENDING_REFERENCE, Queries & Reconciliation (R
     expect(txById.externalTransactionId).toBe('q-bet-1');
 
     // GET /providers/:providerId/wagering/transactions/:externalTransactionId
-    const txByExtRes = await fetch(
-      `${baseUrl}/providers/provider-a/wagering/transactions/q-win-1`,
-    );
+    const txByExtRes = await fetch(`${baseUrl}/providers/provider-a/wagering/transactions/q-win-1`);
     expect(txByExtRes.status).toBe(200);
     const txByExt = (await txByExtRes.json()) as { id: string };
     expect(txByExt.id).toBe(win1.body.transactionId);

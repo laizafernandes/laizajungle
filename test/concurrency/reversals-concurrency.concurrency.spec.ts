@@ -15,7 +15,7 @@ import {
   ProcessPendingReferencesUseCase,
   type ProcessWagerTransactionResult,
 } from '../../src/application/index';
-import { FailureCode, WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/index';
+import { FailureCode, WagerTransactionKind } from '../../src/domain/index';
 
 interface ErrorBody {
   statusCode: number;
@@ -67,7 +67,7 @@ describe('Sprint 4 — Reversals, PENDING_REFERENCE Workers & Deadlock Stress (R
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    await app.listen(0);
+    await app.listen(0, '127.0.0.1');
 
     const server = app.getHttpServer() as { address: () => { port: number } };
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -329,6 +329,45 @@ describe('Sprint 4 — Reversals, PENDING_REFERENCE Workers & Deadlock Stress (R
       [wallet.id],
     );
     expect(pendingLeft[0]?.count).toBe('0');
+
+    // Concurrent workers exhausting an orphan PENDING_REFERENCE transition it cleanly to REJECTED (REFERENCE_NOT_FOUND_EXPIRED)
+    const orphanRes = await submitTx('provider-a:w-orphan', {
+      providerId: 'provider-a',
+      externalTransactionId: 'w-orphan',
+      playerId,
+      walletId: wallet.id,
+      roundId: 'round-w-orphan',
+      gameId: 'fortune-chimp',
+      kind: WagerTransactionKind.Refund,
+      money: { amount: '10.00', currency: 'BRL' },
+      referenceExternalTransactionId: 'missing-forever',
+    });
+    expect(orphanRes.status).toBe(202);
+
+    let stepNow = Date.now() + 5_000;
+    for (let step = 0; step < 6; step++) {
+      stepNow += 60_000;
+      const tickDate = new Date(stepNow);
+      await Promise.all([
+        pendingWorkerUseCase.processDueBatch({ now: tickDate, batchSize: 10 }),
+        pendingWorkerUseCase.processDueBatch({ now: tickDate, batchSize: 10 }),
+      ]);
+    }
+
+    const orphanReplay = await submitTx('provider-a:w-orphan', {
+      providerId: 'provider-a',
+      externalTransactionId: 'w-orphan',
+      playerId,
+      walletId: wallet.id,
+      roundId: 'round-w-orphan',
+      gameId: 'fortune-chimp',
+      kind: WagerTransactionKind.Refund,
+      money: { amount: '10.00', currency: 'BRL' },
+      referenceExternalTransactionId: 'missing-forever',
+    });
+    expect(orphanReplay.status).toBe(422);
+    expect(orphanReplay.body.failureCode).toBe(FailureCode.ReferenceNotFoundExpired);
+    await assertWalletMatchesLedger(orm, wallet.id);
   });
 
   it('deadlock stress test: concurrent HTTP BET/WIN/REFUND/ROLLBACK traffic alongside 2 parallel workers produces zero deadlocks (40P01)', async () => {
@@ -370,8 +409,9 @@ describe('Sprint 4 — Reversals, PENDING_REFERENCE Workers & Deadlock Stress (R
       }
     };
 
-    const httpTasks: Array<Promise<{ status: number; body: ProcessWagerTransactionResult & ErrorBody }>> =
-      [];
+    const httpTasks: Array<
+      Promise<{ status: number; body: ProcessWagerTransactionResult & ErrorBody }>
+    > = [];
 
     for (let wIdx = 0; wIdx < wallets.length; wIdx++) {
       const w = wallets[wIdx];

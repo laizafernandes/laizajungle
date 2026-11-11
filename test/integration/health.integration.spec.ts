@@ -27,7 +27,7 @@ describe('Sprint 0 — Health & Real Infrastructure Integration', () => {
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    await app.listen(0);
+    await app.listen(0, '127.0.0.1');
 
     const server = app.getHttpServer() as { address: () => { port: number } };
     const { port } = server.address();

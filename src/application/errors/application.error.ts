@@ -23,6 +23,14 @@ export class WalletNotFoundError extends ApplicationError {
   }
 }
 
+export class TransactionNotFoundError extends ApplicationError {
+  readonly errorCode = 'TRANSACTION_NOT_FOUND';
+
+  constructor(identifier: string) {
+    super(`Transaction ${identifier} was not found`);
+  }
+}
+
 export class DuplicateWalletError extends ApplicationError {
   readonly errorCode = 'WALLET_ALREADY_EXISTS';
 

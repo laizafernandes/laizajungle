@@ -119,7 +119,7 @@ describe('Sprint 3 — Real Concurrency & Per-Wallet Locking (Real Postgres)', (
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    await app.listen(0);
+    await app.listen(0, '127.0.0.1');
 
     const server = app.getHttpServer() as { address: () => { port: number } };
     baseUrl = `http://127.0.0.1:${server.address().port}`;

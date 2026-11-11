@@ -73,7 +73,10 @@ export function parseSubmitWagerTransactionBody(body: unknown): SubmitWagerTrans
   const money = assertMoneyProps(obj.money, 'money');
 
   let referenceExternalTransactionId: string | undefined;
-  if (obj.referenceExternalTransactionId !== undefined) {
+  if (
+    obj.referenceExternalTransactionId !== undefined &&
+    obj.referenceExternalTransactionId !== null
+  ) {
     if (
       typeof obj.referenceExternalTransactionId !== 'string' ||
       obj.referenceExternalTransactionId.trim().length === 0
@@ -96,4 +99,18 @@ export function parseSubmitWagerTransactionBody(body: unknown): SubmitWagerTrans
     money,
     referenceExternalTransactionId,
   };
+}
+
+export function parseLedgerLimitQuery(rawLimit: string | undefined): number {
+  if (rawLimit === undefined || rawLimit.trim().length === 0) {
+    return 50;
+  }
+  if (!/^\d+$/.test(rawLimit.trim())) {
+    throw new ValidationApplicationError('limit must be an integer between 1 and 100');
+  }
+  const parsed = Number.parseInt(rawLimit.trim(), 10);
+  if (parsed < 1 || parsed > 100) {
+    throw new ValidationApplicationError('limit must be an integer between 1 and 100');
+  }
+  return parsed;
 }

@@ -1,13 +1,10 @@
 import {
-  FailureCode,
-  LedgerDirection,
+  type FailureCode,
   Money,
   type MoneyProps,
   WagerTransaction,
   WagerTransactionKind,
-  WagerTransactionStatus,
-  type Wallet,
-  WalletLedgerEntry,
+  type WagerTransactionStatus,
 } from '../../domain/index';
 import {
   ExternalTransactionConflictError,
@@ -21,7 +18,6 @@ import type {
   TransactionContext,
   UnitOfWorkPort,
   WagerTransactionRepositoryPort,
-  WalletLedgerRepositoryPort,
   WalletRepositoryPort,
 } from '../ports/wagering.ports';
 import { CanonicalPayloadHasher } from '../services/canonical-payload-hasher';
@@ -30,6 +26,7 @@ import {
   isNonEmptyString,
   isValidUuid,
 } from '../services/validation.helpers';
+import type { WagerTransactionResolutionService } from '../services/wager-transaction-resolution.service';
 
 export interface ProcessWagerTransactionCommand {
   idempotencyKey: string;
@@ -65,7 +62,7 @@ export class ProcessWagerTransactionUseCase {
     private readonly unitOfWork: UnitOfWorkPort,
     private readonly walletRepository: WalletRepositoryPort,
     private readonly wagerTransactionRepository: WagerTransactionRepositoryPort,
-    private readonly walletLedgerRepository: WalletLedgerRepositoryPort,
+    private readonly resolutionService: WagerTransactionResolutionService,
     private readonly idGenerator: IdGeneratorPort,
     private readonly clock: ClockPort,
   ) {}
@@ -75,15 +72,6 @@ export class ProcessWagerTransactionUseCase {
     const money = Money.from(command.money);
     if (!money.isPositive()) {
       throw new ValidationApplicationError('Transaction money amount must be greater than 0.00');
-    }
-
-    if (
-      command.kind === WagerTransactionKind.Refund ||
-      command.kind === WagerTransactionKind.Rollback
-    ) {
-      throw new ValidationApplicationError(
-        `Transaction kind ${command.kind} is not enabled yet (scheduled for Sprint 4)`,
-      );
     }
 
     const payloadHash = CanonicalPayloadHasher.hash({
@@ -131,7 +119,7 @@ export class ProcessWagerTransactionUseCase {
       return this.buildReplayResult(tx, existingPreLock, payloadHash);
     }
 
-    // 2. Acquire per-wallet pessimistic write lock (SELECT ... FOR UPDATE).
+    // 2. Acquire per-wallet pessimistic write lock (SELECT ... FOR UPDATE) — Global Lock Order: Wallet -> WagerTransaction.
     const wallet = await this.walletRepository.findByIdForUpdate(tx, command.walletId);
     if (!wallet) {
       throw new WalletNotFoundError(command.walletId);
@@ -169,84 +157,15 @@ export class ProcessWagerTransactionUseCase {
       createdAt: now,
     });
 
-    const businessRejection = this.checkBusinessPreconditions(wallet, command, money);
-    if (businessRejection) {
-      wagerTx.reject(businessRejection, now, wallet.balance);
-      await this.wagerTransactionRepository.insert(tx, wagerTx);
-      return {
-        transactionId: wagerTx.id,
-        status: WagerTransactionStatus.Rejected,
-        failureCode: businessRejection,
-        balance: wallet.balance.toJSON(),
-        idempotentReplay: false,
-      };
-    }
-
-    return this.applyTransaction(tx, wallet, wagerTx, now);
-  }
-
-  private checkBusinessPreconditions(
-    wallet: Wallet,
-    command: ProcessWagerTransactionCommand,
-    money: Money,
-  ): FailureCode | undefined {
-    if (wallet.currency !== money.currency) {
-      return FailureCode.CurrencyMismatch;
-    }
-    if (wallet.playerId !== command.playerId) {
-      return FailureCode.PlayerMismatch;
-    }
-    if (command.kind === WagerTransactionKind.Bet && wallet.balance.isLessThan(money)) {
-      return FailureCode.InsufficientBalance;
-    }
-    return undefined;
-  }
-
-  private async applyTransaction(
-    tx: TransactionContext,
-    wallet: Wallet,
-    wagerTx: WagerTransaction,
-    now: Date,
-  ): Promise<ProcessWagerTransactionResult> {
-    if (!wagerTx.affectsBalance()) {
-      // LOSS: records outcome without altering wallet balance or creating a ledger entry.
-      wagerTx.markProcessed(undefined, now, wallet.balance);
-      await this.wagerTransactionRepository.insert(tx, wagerTx);
-      return {
-        transactionId: wagerTx.id,
-        status: WagerTransactionStatus.Processed,
-        balance: wallet.balance.toJSON(),
-        idempotentReplay: false,
-      };
-    }
-
-    const direction = wagerTx.ledgerDirectionFor();
-    const movement =
-      direction === LedgerDirection.Debit
-        ? wallet.debit(wagerTx.money, now)
-        : wallet.credit(wagerTx.money, now);
-
-    wagerTx.markProcessed(undefined, now, movement.balanceAfter);
-
-    const ledgerEntry = WalletLedgerEntry.create({
-      id: this.idGenerator.nextId(),
-      walletId: wallet.id,
-      transactionId: wagerTx.id,
-      direction,
-      money: wagerTx.money,
-      balanceBefore: movement.balanceBefore,
-      balanceAfter: movement.balanceAfter,
-      createdAt: now,
-    });
-
-    await this.walletRepository.save(tx, wallet);
-    await this.wagerTransactionRepository.insert(tx, wagerTx);
-    await this.walletLedgerRepository.insert(tx, ledgerEntry);
-
+    const outcome = await this.resolutionService.resolveAndApply(
+      tx,
+      wallet,
+      wagerTx,
+      now,
+      'insert',
+    );
     return {
-      transactionId: wagerTx.id,
-      status: WagerTransactionStatus.Processed,
-      balance: movement.balanceAfter.toJSON(),
+      ...outcome,
       idempotentReplay: false,
     };
   }
@@ -344,6 +263,15 @@ export class ProcessWagerTransactionUseCase {
     }
     if (!VALID_EXTERNAL_KINDS.has(command.kind)) {
       throw new ValidationApplicationError(`Invalid transaction kind: ${String(command.kind)}`);
+    }
+    if (
+      (command.kind === WagerTransactionKind.Refund ||
+        command.kind === WagerTransactionKind.Rollback) &&
+      !isNonEmptyString(command.referenceExternalTransactionId)
+    ) {
+      throw new ValidationApplicationError(
+        `${command.kind} requires referenceExternalTransactionId`,
+      );
     }
   }
 }

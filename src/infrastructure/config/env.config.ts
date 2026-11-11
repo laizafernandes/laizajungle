@@ -12,6 +12,15 @@ export interface AppEnvConfig {
     poolMax: number;
     lockTimeoutMs: number;
   };
+  pendingReference: {
+    baseDelayMs: number;
+    maxDelayMs: number;
+    maxAttempts: number;
+    ttlMs: number;
+    pollIntervalMs: number;
+    batchSize: number;
+    workerEnabled: boolean;
+  };
   sqs: {
     region: string;
     accessKeyId: string;
@@ -39,6 +48,34 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): AppEnvConfi
   const lockTimeoutMs = parsePositiveInt(env.DB_LOCK_TIMEOUT_MS, 3000, 'DB_LOCK_TIMEOUT_MS');
   const maxReceiveCount = parsePositiveInt(env.SQS_MAX_RECEIVE_COUNT, 3, 'SQS_MAX_RECEIVE_COUNT');
 
+  const pendingBaseDelayMs = parsePositiveInt(
+    env.PENDING_REF_BASE_DELAY_MS,
+    1000,
+    'PENDING_REF_BASE_DELAY_MS',
+  );
+  const pendingMaxDelayMs = parsePositiveInt(
+    env.PENDING_REF_MAX_DELAY_MS,
+    30_000,
+    'PENDING_REF_MAX_DELAY_MS',
+  );
+  const pendingMaxAttempts = parsePositiveInt(
+    env.PENDING_REF_MAX_ATTEMPTS,
+    5,
+    'PENDING_REF_MAX_ATTEMPTS',
+  );
+  const pendingTtlMs = parsePositiveInt(env.PENDING_REF_TTL_MS, 300_000, 'PENDING_REF_TTL_MS');
+  const pendingPollIntervalMs = parsePositiveInt(
+    env.PENDING_REF_POLL_INTERVAL_MS,
+    1000,
+    'PENDING_REF_POLL_INTERVAL_MS',
+  );
+  const pendingBatchSize = parsePositiveInt(
+    env.PENDING_REF_BATCH_SIZE,
+    50,
+    'PENDING_REF_BATCH_SIZE',
+  );
+  const workerEnabled = (env.PENDING_REF_WORKER_ENABLED ?? 'true').toLowerCase() !== 'false';
+
   if (poolMin > poolMax) {
     throw new Error(`DB_POOL_MIN (${poolMin}) must not exceed DB_POOL_MAX (${poolMax})`);
   }
@@ -56,6 +93,15 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): AppEnvConfi
       poolMin,
       poolMax,
       lockTimeoutMs,
+    },
+    pendingReference: {
+      baseDelayMs: pendingBaseDelayMs,
+      maxDelayMs: pendingMaxDelayMs,
+      maxAttempts: pendingMaxAttempts,
+      ttlMs: pendingTtlMs,
+      pollIntervalMs: pendingPollIntervalMs,
+      batchSize: pendingBatchSize,
+      workerEnabled,
     },
     sqs: {
       region: env.AWS_REGION ?? 'us-east-1',
