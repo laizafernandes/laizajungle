@@ -1,10 +1,12 @@
-import { Controller, Get, HttpCode, HttpStatus, Inject, Param } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Inject, Param, UseGuards } from '@nestjs/common';
 import {
   GetWagerTransactionUseCase,
   type WagerTransactionDetailsDto,
 } from '../../../application/index';
+import { NoopProviderAuthGuard } from '../guards/noop-provider-auth.guard';
 
 @Controller('providers')
+@UseGuards(NoopProviderAuthGuard)
 export class ProvidersWageringController {
   constructor(
     @Inject(GetWagerTransactionUseCase)

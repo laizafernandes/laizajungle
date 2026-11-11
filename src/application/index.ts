@@ -16,6 +16,19 @@ export type {
   ReadinessStatus,
 } from './ports/health-checker.port';
 export {
+  LOGGER_PORT,
+  METRICS_PORT,
+  PROVIDER_IDENTITY_PORT,
+  type DuplicateChannel,
+  type DuplicateMechanism,
+  type LogFields,
+  type MetricsPort,
+  type ProviderAuthContext,
+  type ProviderIdentityPort,
+  type RetryComponent,
+  type StructuredLoggerPort,
+} from './ports/observability.ports';
+export {
   CLOCK_PORT,
   EVENT_PUBLISHER_PORT,
   ID_GENERATOR_PORT,

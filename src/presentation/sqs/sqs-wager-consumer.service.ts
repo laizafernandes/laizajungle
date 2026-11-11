@@ -19,7 +19,11 @@ import {
   ExternalTransactionConflictError,
   IdempotencyConflictError,
   InboxPayloadMismatchError,
+  LOGGER_PORT,
+  METRICS_PORT,
+  type MetricsPort,
   ProcessWagerTransactionUseCase,
+  type StructuredLoggerPort,
   TransientInfrastructureError,
   ValidationApplicationError,
   WalletNotFoundError,
@@ -87,6 +91,8 @@ export class SqsWagerConsumerService implements OnModuleInit, OnModuleDestroy {
     @Inject(ProcessWagerTransactionUseCase)
     private readonly processWagerTransactionUseCase: ProcessWagerTransactionUseCase,
     @Optional() config?: AppEnvConfig,
+    @Optional() @Inject(LOGGER_PORT) private readonly logger?: StructuredLoggerPort,
+    @Optional() @Inject(METRICS_PORT) private readonly metrics?: MetricsPort,
   ) {
     this.config = config ?? loadEnvConfig();
   }
@@ -217,12 +223,49 @@ export class SqsWagerConsumerService implements OnModuleInit, OnModuleDestroy {
           );
         }
 
+        this.logger?.info('sqs_message_acked', {
+          correlationId: parsed.messageId,
+          messageId: parsed.messageId,
+          walletId: parsed.walletId,
+          providerId: parsed.data.providerId,
+          idempotencyKey: parsed.data.idempotencyKey,
+        });
+
         summary.acked += 1;
       } catch (error) {
         summary.retried += 1;
 
+        const messageId = item.parsed?.messageId ?? item.raw.MessageId ?? 'unknown';
+        const walletId = item.parsed?.walletId;
+        const providerId = item.parsed?.data.providerId;
+        const reason = error instanceof Error ? error.name : 'UNKNOWN_ERROR';
+
+        const visibilityTimeoutSec = item.raw.ReceiptHandle
+          ? this.computeRetryVisibilityTimeoutSec(item.raw, error)
+          : 0;
+
+        if (this.isNonTransientDlqError(error)) {
+          this.metrics?.recordDlqRouted({ reason });
+          this.logger?.warn('sqs_message_dlq_routed', {
+            correlationId: messageId,
+            messageId,
+            ...(walletId ? { walletId } : {}),
+            ...(providerId ? { providerId } : {}),
+            reason,
+          });
+        } else {
+          this.metrics?.recordRetry({ component: 'sqs_consumer' });
+          this.logger?.warn('sqs_message_retry', {
+            correlationId: messageId,
+            messageId,
+            ...(walletId ? { walletId } : {}),
+            ...(providerId ? { providerId } : {}),
+            reason,
+            visibilityTimeoutSec,
+          });
+        }
+
         if (item.raw.ReceiptHandle) {
-          const visibilityTimeoutSec = this.computeRetryVisibilityTimeoutSec(item.raw, error);
           await this.safeChangeVisibility(queueUrl, item.raw.ReceiptHandle, visibilityTimeoutSec);
         }
 

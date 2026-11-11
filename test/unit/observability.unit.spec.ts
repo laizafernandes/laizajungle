@@ -114,10 +114,10 @@ describe('Sprint 6 — Observability: Structured Logger & Metrics Registry (Unit
     expect(text).toContain('wager_processing_duration_ms_count 2');
 
     // Low-cardinality safeguard: forbid entity IDs inside metric label names
-    expect(text).not.toMatch(/\b(walletId|playerId|transactionId|providerId|idempotencyKey|messageId)=/);
-    expect(() =>
-      registry.assertAllowedLabels({ walletId: 'abc', status: 'PROCESSED' }),
-    ).toThrow();
+    expect(text).not.toMatch(
+      /\b(walletId|playerId|transactionId|providerId|idempotencyKey|messageId)=/,
+    );
+    expect(() => registry.assertAllowedLabels({ walletId: 'abc', status: 'PROCESSED' })).toThrow();
 
     // Fault tolerance: expire cache by forcing fresh scrape with failing DLQ probe
     failDlq = true;

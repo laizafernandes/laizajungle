@@ -1,5 +1,6 @@
 import { LedgerDirection, Money, type MoneyProps } from '../../domain/index';
 import { ValidationApplicationError, WalletNotFoundError } from '../errors/application.error';
+import type { MetricsPort, StructuredLoggerPort } from '../ports/observability.ports';
 import type {
   UnitOfWorkPort,
   WalletLedgerRepositoryPort,
@@ -21,9 +22,11 @@ export class ReconcileWalletUseCase {
     private readonly unitOfWork: UnitOfWorkPort,
     private readonly walletRepository: WalletRepositoryPort,
     private readonly walletLedgerRepository: WalletLedgerRepositoryPort,
+    private readonly logger?: StructuredLoggerPort,
+    private readonly metrics?: MetricsPort,
   ) {}
 
-  async execute(walletId: string): Promise<WalletReconciliationResult> {
+  async execute(walletId: string, correlationId?: string): Promise<WalletReconciliationResult> {
     if (!isValidUuid(walletId)) {
       throw new ValidationApplicationError('walletId must be a valid UUID');
     }
@@ -58,19 +61,27 @@ export class ReconcileWalletUseCase {
       };
     });
 
+    this.metrics?.recordReconciliationResult({ consistent: result.consistent });
+
     if (!result.consistent) {
-      console.warn(
-        JSON.stringify({
-          level: 'warn',
-          event: 'wallet_reconciliation_mismatch',
-          walletId: result.walletId,
-          storedBalance: result.storedBalance,
-          calculatedBalance: result.calculatedBalance,
-          difference: result.difference,
-          checkedEntries: result.checkedEntries,
-          timestamp: new Date().toISOString(),
-        }),
-      );
+      const fields = {
+        correlationId: correlationId ?? result.walletId,
+        walletId: result.walletId,
+        consistent: false,
+        checkedEntries: result.checkedEntries,
+      };
+      if (this.logger) {
+        this.logger.warn('wallet_reconciliation_mismatch', fields);
+      } else {
+        console.warn(
+          JSON.stringify({
+            level: 'warn',
+            event: 'wallet_reconciliation_mismatch',
+            ...fields,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      }
     }
 
     return result;

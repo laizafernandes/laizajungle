@@ -11,6 +11,9 @@ import {
   INBOX_REPOSITORY_PORT,
   type IdGeneratorPort,
   type InboxRepositoryPort,
+  LOGGER_PORT,
+  METRICS_PORT,
+  type MetricsPort,
   OUTBOX_REPOSITORY_PORT,
   OpenWalletUseCase,
   OutboxPublisherUseCase,
@@ -20,6 +23,7 @@ import {
   ProcessPendingReferencesUseCase,
   ProcessWagerTransactionUseCase,
   ReconcileWalletUseCase,
+  type StructuredLoggerPort,
   UNIT_OF_WORK_PORT,
   type UnitOfWorkPort,
   WAGER_TRANSACTION_REPOSITORY_PORT,
@@ -164,6 +168,8 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         ID_GENERATOR_PORT,
         CLOCK_PORT,
         INBOX_REPOSITORY_PORT,
+        LOGGER_PORT,
+        METRICS_PORT,
       ],
       useFactory: (
         unitOfWork: UnitOfWorkPort,
@@ -173,6 +179,8 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         idGen: IdGeneratorPort,
         clock: ClockPort,
         inboxRepo: InboxRepositoryPort,
+        logger: StructuredLoggerPort,
+        metrics: MetricsPort,
       ) =>
         new ProcessWagerTransactionUseCase(
           unitOfWork,
@@ -182,6 +190,8 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
           idGen,
           clock,
           inboxRepo,
+          logger,
+          metrics,
         ),
     },
     {
@@ -192,6 +202,8 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         WAGER_TRANSACTION_REPOSITORY_PORT,
         WagerTransactionResolutionService,
         CLOCK_PORT,
+        LOGGER_PORT,
+        METRICS_PORT,
       ],
       useFactory: (
         unitOfWork: UnitOfWorkPort,
@@ -199,6 +211,8 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
         wagerTxRepo: WagerTransactionRepositoryPort,
         resolutionService: WagerTransactionResolutionService,
         clock: ClockPort,
+        logger: StructuredLoggerPort,
+        metrics: MetricsPort,
       ) =>
         new ProcessPendingReferencesUseCase(
           unitOfWork,
@@ -207,23 +221,42 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
           resolutionService,
           clock,
           loadEnvConfig().pendingReference.batchSize,
+          logger,
+          metrics,
         ),
     },
     {
       provide: OutboxPublisherUseCase,
-      inject: [UNIT_OF_WORK_PORT, OUTBOX_REPOSITORY_PORT, EVENT_PUBLISHER_PORT, CLOCK_PORT],
+      inject: [
+        UNIT_OF_WORK_PORT,
+        OUTBOX_REPOSITORY_PORT,
+        EVENT_PUBLISHER_PORT,
+        CLOCK_PORT,
+        LOGGER_PORT,
+        METRICS_PORT,
+      ],
       useFactory: (
         unitOfWork: UnitOfWorkPort,
         outboxRepo: OutboxRepositoryPort,
         eventPublisher: EventPublisherPort,
         clock: ClockPort,
+        logger: StructuredLoggerPort,
+        metrics: MetricsPort,
       ) => {
         const outboxCfg = loadEnvConfig().outbox;
-        return new OutboxPublisherUseCase(unitOfWork, outboxRepo, eventPublisher, clock, {
-          defaultBatchSize: outboxCfg.batchSize,
-          baseRetryDelayMs: outboxCfg.baseDelayMs,
-          maxRetryDelayMs: outboxCfg.maxDelayMs,
-        });
+        return new OutboxPublisherUseCase(
+          unitOfWork,
+          outboxRepo,
+          eventPublisher,
+          clock,
+          {
+            defaultBatchSize: outboxCfg.batchSize,
+            baseRetryDelayMs: outboxCfg.baseDelayMs,
+            maxRetryDelayMs: outboxCfg.maxDelayMs,
+          },
+          logger,
+          metrics,
+        );
       },
     },
     {
@@ -249,12 +282,20 @@ import { PendingReferenceWorker } from '../workers/pending-reference.worker';
     },
     {
       provide: ReconcileWalletUseCase,
-      inject: [UNIT_OF_WORK_PORT, WALLET_REPOSITORY_PORT, WALLET_LEDGER_REPOSITORY_PORT],
+      inject: [
+        UNIT_OF_WORK_PORT,
+        WALLET_REPOSITORY_PORT,
+        WALLET_LEDGER_REPOSITORY_PORT,
+        LOGGER_PORT,
+        METRICS_PORT,
+      ],
       useFactory: (
         unitOfWork: UnitOfWorkPort,
         walletRepo: WalletRepositoryPort,
         ledgerRepo: WalletLedgerRepositoryPort,
-      ) => new ReconcileWalletUseCase(unitOfWork, walletRepo, ledgerRepo),
+        logger: StructuredLoggerPort,
+        metrics: MetricsPort,
+      ) => new ReconcileWalletUseCase(unitOfWork, walletRepo, ledgerRepo, logger, metrics),
     },
     PendingReferenceWorker,
     OutboxPublisherWorker,

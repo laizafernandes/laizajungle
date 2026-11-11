@@ -2,12 +2,14 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Inject,
   Param,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   GetWalletLedgerUseCase,
@@ -20,8 +22,10 @@ import {
   type WalletReconciliationResult,
 } from '../../../application/index';
 import { parseLedgerLimitQuery, parseOpenWalletBody } from '../dtos/wagering.dto';
+import { NoopProviderAuthGuard } from '../guards/noop-provider-auth.guard';
 
 @Controller('wallets')
+@UseGuards(NoopProviderAuthGuard)
 export class WalletsController {
   constructor(
     @Inject(OpenWalletUseCase) private readonly openWalletUseCase: OpenWalletUseCase,
@@ -62,7 +66,13 @@ export class WalletsController {
 
   @Post(':walletId/reconciliation')
   @HttpCode(HttpStatus.OK)
-  async reconcileWallet(@Param('walletId') walletId: string): Promise<WalletReconciliationResult> {
-    return this.reconcileWalletUseCase.execute(walletId);
+  async reconcileWallet(
+    @Param('walletId') walletId: string,
+    @Headers('x-correlation-id') correlationIdHeader: string | string[] | undefined,
+  ): Promise<WalletReconciliationResult> {
+    const correlationId = Array.isArray(correlationIdHeader)
+      ? correlationIdHeader[0]
+      : correlationIdHeader;
+    return this.reconcileWalletUseCase.execute(walletId, correlationId?.trim() || undefined);
   }
 }

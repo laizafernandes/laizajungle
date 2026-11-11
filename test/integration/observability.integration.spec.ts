@@ -212,7 +212,8 @@ describe('Sprint 6 — Observability Integration: Structured Logs without Moneta
     // Verify correlation fields exist in logs and zero monetary amounts leaked
     const httpBetLog = logLines.find(
       (l) =>
-        l.parsed.event === 'wager_transaction_processed' && l.parsed.correlationId === 'http-bet-corr',
+        l.parsed.event === 'wager_transaction_processed' &&
+        l.parsed.correlationId === 'http-bet-corr',
     );
     expect(httpBetLog).toBeDefined();
     expect(httpBetLog?.parsed.transactionId).toBe(betBody.transactionId);
@@ -246,7 +247,9 @@ describe('Sprint 6 — Observability Integration: Structured Logs without Moneta
 
     expect(promText).toContain('wager_transactions_total{kind="BET",status="PROCESSED"} 1');
     expect(promText).toContain('wager_transactions_total{kind="WIN",status="PROCESSED"} 1');
-    expect(promText).toContain('wager_duplicates_total{channel="http",mechanism="idempotency_key"} 1');
+    expect(promText).toContain(
+      'wager_duplicates_total{channel="http",mechanism="idempotency_key"} 1',
+    );
     expect(promText).toContain('wager_reconciliation_mismatches_total 1');
     expect(promText).toContain('wager_outbox_pending_count');
     expect(promText).toContain('wager_processing_duration_ms_count');

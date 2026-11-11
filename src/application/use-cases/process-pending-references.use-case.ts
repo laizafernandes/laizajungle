@@ -1,4 +1,5 @@
 import { WagerTransactionStatus } from '../../domain/index';
+import type { MetricsPort, StructuredLoggerPort } from '../ports/observability.ports';
 import type {
   ClockPort,
   UnitOfWorkPort,
@@ -33,6 +34,8 @@ export class ProcessPendingReferencesUseCase {
     private readonly resolutionService: WagerTransactionResolutionService,
     private readonly clock: ClockPort,
     private readonly defaultBatchSize = 50,
+    private readonly logger?: StructuredLoggerPort,
+    private readonly metrics?: MetricsPort,
   ) {}
 
   async processDueBatch(
@@ -67,6 +70,8 @@ export class ProcessPendingReferencesUseCase {
     walletId: string,
     now: Date,
   ): Promise<'resolved' | 'rejected' | 'rescheduled' | 'skipped'> {
+    const startedAt = performance.now();
+
     return this.unitOfWork.runInTransaction(async (tx) => {
       // Global Lock Order Step 1: Lock Wallet FIRST (same root order as ProcessWagerTransactionUseCase).
       const wallet = await this.walletRepository.findByIdForUpdate(tx, walletId);
@@ -100,12 +105,46 @@ export class ProcessPendingReferencesUseCase {
         { correlationId: pendingTx.id, causationId: pendingTx.id },
       );
 
+      const durationMs = Math.round((performance.now() - startedAt) * 1000) / 1000;
+
       if (result.status === WagerTransactionStatus.Processed) {
+        this.metrics?.recordTransactionOutcome({
+          status: result.status,
+          kind: pendingTx.kind,
+          durationMs,
+        });
+        this.logger?.info('pending_reference_resolved', {
+          correlationId: pendingTx.id,
+          transactionId: pendingTx.id,
+          walletId: pendingTx.walletId,
+          providerId: pendingTx.providerId,
+          idempotencyKey: pendingTx.idempotencyKey,
+          kind: pendingTx.kind,
+          status: result.status,
+          durationMs,
+        });
         return 'resolved';
       }
       if (result.status === WagerTransactionStatus.Rejected) {
+        this.metrics?.recordTransactionOutcome({
+          status: result.status,
+          kind: pendingTx.kind,
+          durationMs,
+        });
+        this.logger?.warn('pending_reference_rejected', {
+          correlationId: pendingTx.id,
+          transactionId: pendingTx.id,
+          walletId: pendingTx.walletId,
+          providerId: pendingTx.providerId,
+          idempotencyKey: pendingTx.idempotencyKey,
+          kind: pendingTx.kind,
+          status: result.status,
+          failureCode: result.failureCode,
+          durationMs,
+        });
         return 'rejected';
       }
+      this.metrics?.recordRetry({ component: 'pending_reference' });
       return 'rescheduled';
     });
   }

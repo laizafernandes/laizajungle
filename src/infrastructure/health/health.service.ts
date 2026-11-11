@@ -68,7 +68,11 @@ export class HealthService {
         details: {
           fifoEnabled: verification.fifoEnabled,
           maxReceiveCount: verification.maxReceiveCount,
-          queues: [verification.wagerQueueUrl, verification.wagerDlqUrl],
+          queues: [
+            verification.wagerQueueUrl,
+            verification.wagerDlqUrl,
+            verification.eventsQueueUrl,
+          ],
         },
       };
     } catch (error) {

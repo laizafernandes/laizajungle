@@ -1,3 +1,4 @@
+import type { MetricsPort, StructuredLoggerPort } from '../ports/observability.ports';
 import type {
   ClockPort,
   EventPublisherPort,
@@ -40,6 +41,8 @@ export class OutboxPublisherUseCase {
     private readonly eventPublisher: EventPublisherPort,
     private readonly clock: ClockPort,
     private readonly options: OutboxPublisherOptions = {},
+    private readonly logger?: StructuredLoggerPort,
+    private readonly metrics?: MetricsPort,
   ) {}
 
   setFaultHooks(hooks: OutboxPublisherFaultHooks): void {
@@ -71,11 +74,27 @@ export class OutboxPublisherUseCase {
           message.markPublished(now);
           await this.outboxRepository.save(tx, message);
           published += 1;
-        } catch {
+        } catch (error) {
           message.scheduleRetry(now, baseDelayMs, maxDelayMs);
           await this.outboxRepository.save(tx, message);
+          this.metrics?.recordRetry({ component: 'outbox_publisher' });
+          this.logger?.warn('outbox_publish_retry', {
+            walletId: message.aggregateId,
+            eventId: message.id,
+            eventType: message.eventType,
+            attempts: message.attempts,
+            error: error instanceof Error ? error.message : String(error),
+          });
           failed += 1;
         }
+      }
+
+      if (published > 0) {
+        this.logger?.info('outbox_batch_published', {
+          scanned: dueMessages.length,
+          published,
+          failed,
+        });
       }
 
       return {

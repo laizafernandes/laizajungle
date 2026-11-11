@@ -5,15 +5,21 @@ import {
   type MoneyProps,
   WagerTransaction,
   WagerTransactionKind,
-  type WagerTransactionStatus,
+  WagerTransactionStatus,
 } from '../../domain/index';
 import {
   ExternalTransactionConflictError,
   IdempotencyConflictError,
   InboxPayloadMismatchError,
   ValidationApplicationError,
+  WalletLockTimeoutError,
   WalletNotFoundError,
 } from '../errors/application.error';
+import type {
+  DuplicateMechanism,
+  MetricsPort,
+  StructuredLoggerPort,
+} from '../ports/observability.ports';
 import type {
   ClockPort,
   IdGeneratorPort,
@@ -62,6 +68,11 @@ export interface ProcessWagerTransactionResult {
   failureCode?: FailureCode;
 }
 
+interface InternalExecutionResult {
+  result: ProcessWagerTransactionResult;
+  duplicateMechanism?: DuplicateMechanism;
+}
+
 const VALID_EXTERNAL_KINDS = new Set<string>([
   WagerTransactionKind.Bet,
   WagerTransactionKind.Win,
@@ -79,9 +90,12 @@ export class ProcessWagerTransactionUseCase {
     private readonly idGenerator: IdGeneratorPort,
     private readonly clock: ClockPort,
     private readonly inboxRepository?: InboxRepositoryPort,
+    private readonly logger?: StructuredLoggerPort,
+    private readonly metrics?: MetricsPort,
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
+    const startedAt = performance.now();
     this.validateCommand(command);
     const money = Money.from(command.money);
     if (!money.isPositive()) {
@@ -100,21 +114,91 @@ export class ProcessWagerTransactionUseCase {
       referenceExternalTransactionId: command.referenceExternalTransactionId,
     });
 
-    try {
-      return await this.unitOfWork.runInTransaction((tx) =>
-        this.processInsideTransaction(tx, command, money, payloadHash),
-      );
-    } catch (error) {
-      const constraint = extractPgUniqueConstraint(error);
+    const correlationId =
+      command.correlationId ?? command.inboxContext?.messageId ?? this.idGenerator.nextId();
+    const channel = command.inboxContext ? 'sqs' : 'http';
 
-      if (
-        constraint?.includes('uq_wager_tx_idempotency_key') ||
-        constraint?.includes('uq_wager_tx_provider_external') ||
-        constraint?.includes('pk_inbox_messages')
-      ) {
-        return this.resolveUniqueConstraintCollision(command, payloadHash);
+    try {
+      let execution: InternalExecutionResult;
+      try {
+        execution = await this.unitOfWork.runInTransaction((tx) =>
+          this.processInsideTransaction(tx, command, money, payloadHash, correlationId),
+        );
+      } catch (error) {
+        const constraint = extractPgUniqueConstraint(error);
+
+        if (
+          constraint?.includes('uq_wager_tx_idempotency_key') ||
+          constraint?.includes('uq_wager_tx_provider_external') ||
+          constraint?.includes('pk_inbox_messages')
+        ) {
+          execution = await this.resolveUniqueConstraintCollision(command, payloadHash);
+        } else {
+          throw error;
+        }
       }
 
+      const durationMs = Math.round((performance.now() - startedAt) * 1000) / 1000;
+      const { result, duplicateMechanism } = execution;
+
+      if (result.idempotentReplay) {
+        this.metrics?.recordDuplicate({
+          channel,
+          mechanism: duplicateMechanism ?? 'idempotency_key',
+        });
+        this.logger?.info('wager_duplicate_detected', {
+          correlationId,
+          messageId: command.inboxContext?.messageId,
+          transactionId: result.transactionId,
+          walletId: command.walletId,
+          providerId: command.providerId,
+          idempotencyKey: command.idempotencyKey,
+          mechanism: duplicateMechanism ?? 'idempotency_key',
+          status: result.status,
+          durationMs,
+        });
+      } else {
+        this.metrics?.recordTransactionOutcome({
+          status: result.status,
+          kind: command.kind,
+          durationMs,
+        });
+
+        const logFields = {
+          correlationId,
+          messageId: command.inboxContext?.messageId,
+          transactionId: result.transactionId,
+          walletId: command.walletId,
+          providerId: command.providerId,
+          idempotencyKey: command.idempotencyKey,
+          kind: command.kind,
+          status: result.status,
+          ...(result.failureCode ? { failureCode: result.failureCode } : {}),
+          durationMs,
+        };
+
+        if (result.status === WagerTransactionStatus.Rejected) {
+          this.logger?.warn('wager_transaction_rejected', logFields);
+        } else if (result.status === WagerTransactionStatus.PendingReference) {
+          this.logger?.info('wager_transaction_pending_reference', logFields);
+        } else {
+          this.logger?.info('wager_transaction_processed', logFields);
+        }
+      }
+
+      return result;
+    } catch (error) {
+      if (error instanceof WalletLockTimeoutError) {
+        this.metrics?.recordLockConflict({ source: channel });
+        this.logger?.warn('wager_lock_conflict', {
+          correlationId,
+          messageId: command.inboxContext?.messageId,
+          walletId: command.walletId,
+          providerId: command.providerId,
+          idempotencyKey: command.idempotencyKey,
+          errorCode: error.errorCode,
+        });
+      }
       throw error;
     }
   }
@@ -124,7 +208,8 @@ export class ProcessWagerTransactionUseCase {
     command: ProcessWagerTransactionCommand,
     money: Money,
     payloadHash: string,
-  ): Promise<ProcessWagerTransactionResult> {
+    correlationId: string,
+  ): Promise<InternalExecutionResult> {
     const now = this.clock.now();
 
     // 0. Inbox deduplication fast-path (when invoked by SQS consumer)
@@ -147,7 +232,10 @@ export class ProcessWagerTransactionUseCase {
           command.idempotencyKey,
         );
         if (existingTx) {
-          return this.buildReplayResult(tx, existingTx, payloadHash);
+          return {
+            result: await this.buildReplayResult(tx, existingTx, payloadHash),
+            duplicateMechanism: 'inbox',
+          };
         }
       }
     }
@@ -160,7 +248,7 @@ export class ProcessWagerTransactionUseCase {
     if (existingPreLock) {
       const replay = await this.buildReplayResult(tx, existingPreLock, payloadHash);
       await this.recordInboxProcessedIfPresent(tx, command, now);
-      return replay;
+      return { result: replay, duplicateMechanism: 'idempotency_key' };
     }
 
     // 2. Acquire per-wallet pessimistic write lock (SELECT ... FOR UPDATE) — Global Lock Order: Wallet -> WagerTransaction.
@@ -181,7 +269,7 @@ export class ProcessWagerTransactionUseCase {
       if (existingPostLock.idempotencyKey === command.idempotencyKey) {
         const replay = await this.buildReplayResult(tx, existingPostLock, payloadHash);
         await this.recordInboxProcessedIfPresent(tx, command, now);
-        return replay;
+        return { result: replay, duplicateMechanism: 'idempotency_key' };
       }
       throw new ExternalTransactionConflictError(command.providerId, command.externalTransactionId);
     }
@@ -209,7 +297,7 @@ export class ProcessWagerTransactionUseCase {
       now,
       'insert',
       {
-        correlationId: command.correlationId ?? command.inboxContext?.messageId ?? wagerTx.id,
+        correlationId,
         causationId: command.causationId ?? command.inboxContext?.messageId ?? wagerTx.id,
       },
     );
@@ -217,8 +305,10 @@ export class ProcessWagerTransactionUseCase {
     await this.recordInboxProcessedIfPresent(tx, command, now);
 
     return {
-      ...outcome,
-      idempotentReplay: false,
+      result: {
+        ...outcome,
+        idempotentReplay: false,
+      },
     };
   }
 
@@ -244,21 +334,25 @@ export class ProcessWagerTransactionUseCase {
   private async resolveUniqueConstraintCollision(
     command: ProcessWagerTransactionCommand,
     payloadHash: string,
-  ): Promise<ProcessWagerTransactionResult> {
+  ): Promise<InternalExecutionResult> {
     const maxReads = 5;
     for (let attempt = 0; attempt < maxReads; attempt++) {
       const winner = await this.unitOfWork.runInTransaction(async (tx) => {
+        let duplicateMechanism: DuplicateMechanism = 'idempotency_key';
         if (command.inboxContext && this.inboxRepository) {
           const existingInbox = await this.inboxRepository.findByKey(
             tx,
             command.inboxContext.consumerName,
             command.inboxContext.messageId,
           );
-          if (existingInbox && !existingInbox.matchesPayload(command.inboxContext.payloadHash)) {
-            throw new InboxPayloadMismatchError(
-              command.inboxContext.consumerName,
-              command.inboxContext.messageId,
-            );
+          if (existingInbox) {
+            if (!existingInbox.matchesPayload(command.inboxContext.payloadHash)) {
+              throw new InboxPayloadMismatchError(
+                command.inboxContext.consumerName,
+                command.inboxContext.messageId,
+              );
+            }
+            duplicateMechanism = 'inbox';
           }
         }
 
@@ -267,7 +361,10 @@ export class ProcessWagerTransactionUseCase {
           command.idempotencyKey,
         );
         if (byKey) {
-          return this.buildReplayResult(tx, byKey, payloadHash);
+          return {
+            result: await this.buildReplayResult(tx, byKey, payloadHash),
+            duplicateMechanism,
+          };
         }
 
         const byExternal = await this.wagerTransactionRepository.findByProviderExternalId(
