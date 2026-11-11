@@ -46,6 +46,9 @@ export class OutboxPublisherUseCase {
   ) {}
 
   setFaultHooks(hooks: OutboxPublisherFaultHooks): void {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Fault hooks cannot be configured in production');
+    }
     this.faultHooks = hooks;
   }
 

@@ -117,6 +117,9 @@ export class SqsWagerConsumerService implements OnModuleInit, OnModuleDestroy {
   }
 
   setFaultHooks(hooks: SqsWagerConsumerFaultHooks): void {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Fault hooks cannot be configured in production');
+    }
     this.faultHooks = hooks;
   }
 
