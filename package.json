@@ -18,7 +18,7 @@
     "test:unit": "bun test test/unit",
     "test:integration": "bun run scripts/wait-for-infra.ts && bun test test/integration",
     "test:concurrency": "bun run scripts/wait-for-infra.ts && bun test test/concurrency",
-    "test:load": "bun run scripts/wait-for-infra.ts && bun run scripts/load-test-placeholder.ts",
+    "test:load": "bun run scripts/wait-for-infra.ts && bun run scripts/load-test.ts",
     "migration:up": "bun run scripts/migrations.ts up",
     "migration:down": "bun run scripts/migrations.ts down",
     "migration:status": "bun run scripts/migrations.ts status"
