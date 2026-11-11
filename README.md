@@ -68,10 +68,18 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 
 ---
 
-## Endpoints de Health Check
+## Endpoints HTTP
 
-Os endpoints de health são públicos (não exigem autenticação, conforme Seção 2 e Seção 9):
+### Wallets, Transações, Consultas e Reconciliação
+- `POST /wallets` — Cria carteira (`201 Created`; se `initialBalance > 0`, cria `OPENING` + `CREDIT` no ledger).
+- `GET /wallets/:walletId` — Consulta saldo e versão da carteira.
+- `GET /wallets/:walletId/ledger?cursor=...&limit=50` — Lista entradas imutáveis do ledger com cursor opaco estável.
+- `POST /wallets/:walletId/reconciliation` — Compara saldo materializado vs soma do ledger (sem correção silenciosa).
+- `POST /wagering/transactions` — Submete `BET`, `WIN`, `LOSS`, `REFUND` ou `ROLLBACK` (`Idempotency-Key` obrigatório; retorna `200`, `202` se `PENDING_REFERENCE`, `422` se `REJECTED`, `409` se conflito).
+- `GET /wagering/transactions/:transactionId` — Consulta transação por ID interno.
+- `GET /providers/:providerId/wagering/transactions/:externalTransactionId` — Consulta transação por `(providerId, externalTransactionId)`.
 
+### Health Checks (abertos sem autenticação)
 - `GET /health/live` — Liveness probe (processo ativo e uptime).
 - `GET /health/ready` (e alias `GET /health`) — Readiness probe (executa `SELECT 1` no PostgreSQL via MikroORM e valida conectividade + existência das filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo` no AWS SQS).
 

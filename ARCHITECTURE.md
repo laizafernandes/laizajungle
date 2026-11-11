@@ -188,3 +188,42 @@ Antes de introduzir `LockMode.PESSIMISTIC_WRITE`, executamos a suíte `bun run t
 1. **Risco de `503 WALLET_LOCK_TIMEOUT` em picos extremos de uma única *hot wallet***: Com `lock_timeout = 3000ms`, se mais de ~300–500 transações modificadoras chegarem exatamente no mesmo segundo para a *mesma* `walletId`, algumas receberão `503` + `Retry-After` em vez de derrubarem o pool de conexões da aplicação inteira. Esse trade-off de *fail-fast / backpressure* protege a disponibilidade das demais carteiras.
 2. **Ordem de execução quando há múltiplos locks**: Neste sprint apenas 1 `Wallet` é lockada por transação, portanto **não há risco de deadlock entre duas carteiras**. Se em evoluções futuras uma operação tocar duas carteiras (ex.: transferência P2P), será obrigatório ordenar os locks por `walletId` crescente.
 3. **Por que manter `Wallet.version` se não usamos optimistic locking**: Mantemos `version` no domínio e no contrato HTTP (`POST /wallets`) porque o enunciado especifica que `version` inicia em 1 e incrementa somente quando o saldo muda (Seção 6.2), servindo como contador monotônico de mutações de saldo para consumidores/eventos (`WalletBalanceChanged`).
+
+---
+
+## 6. Decisões do Sprint 4 (Reversões, `PENDING_REFERENCE`, Ordem Global de Locks & Consultas)
+
+### 6.1. Regras de `REFUND`, `ROLLBACK` e `WIN` Opcional (`Decisão 4A`)
+- **Serviço compartilhado (`WagerTransactionResolutionService`)**: Tanto `ProcessWagerTransactionUseCase` (HTTP/SQS) quanto `ProcessPendingReferencesUseCase` (worker) executam exatamente as mesmas regras de negócio e persistência atômica dentro da mesma transação SQL.
+- **Resolução e validação da referência**:
+  - Resolvida por `(providerId, referenceExternalTransactionId)` e validada quanto a `providerId`, `playerId`, `walletId`, `currency` e `roundId` (`REFERENCE_MISMATCH`), igualdade exata de valor para reversões (`REFERENCE_AMOUNT_MISMATCH`), status `PROCESSED` (`REFERENCE_NOT_PROCESSED` para `REJECTED`/`FAILED`, ou `PENDING_REFERENCE` se a própria referência ainda estiver aguardando referência pai), e tipo alvo permitido (`REFUND` -> apenas `BET`; `ROLLBACK` -> `BET`, `WIN` ou `REFUND`; `WIN` opcional -> apenas `BET`, conforme `Decisão 4A`).
+  - Unicidade por tipo de reversão (`uq_wager_tx_single_reversal_per_kind`): 1 `REFUND` e 1 `ROLLBACK` são tipos distintos de reversão, enquanto um segundo `REFUND` ou segundo `ROLLBACK` para a mesma referência é rejeitado com `REFERENCE_ALREADY_REVERSED`.
+- **Reversão que produziria saldo negativo**:
+  - Rejeitada explicitamente como `REJECTED` com **`REVERSAL_WOULD_CAUSE_NEGATIVE_BALANCE`** (distinto de `INSUFFICIENT_BALANCE` de uma aposta), sem alterar saldo nem gravar ledger, e preservando o replay fiel (`422 Unprocessable Entity` + `resulting_balance_amount`).
+
+### 6.2. `PENDING_REFERENCE`, Backoff Exponencial e Exaustão (`Decisões 2A, 3A`)
+- **Aceite fora de ordem**: Quando a referência ainda não existe, a transação é persistida em `PENDING_REFERENCE` com `next_reference_retry_at` e a API responde **`202 Accepted`** (Seção 9: *"aceite com processamento pendente"*).
+- **Backoff exponencial + limite/TTL (`Decisão 3A`)**:
+  - `PendingReferencePolicy` calcula `delay = min(baseDelayMs * 2^attempt, maxDelayMs)` (padrão `1s -> 2s -> 4s -> 8s -> 16s`, teto `30s`).
+  - Exaustão ocorre quando `attempts >= maxAttempts` (padrão `5`) **ou** `now - createdAt >= ttlMs` (padrão `5 min`), parametrizável via `PENDING_REF_*` no `.env`.
+- **Estado terminal na exaustão (`Decisão 2A`)**:
+  - Seguindo literalmente a Seção 7.1 de `docs/CHALLENGE.md`, ao esgotar o limite a transação transiciona para **`REJECTED`** com `failureCode = REFERENCE_NOT_FOUND_EXPIRED` (reservando `FAILED` para falhas permanentes de infraestrutura conforme Seção 6.3).
+
+### 6.3. Ordem Global Única de Locks (`Decisão 1A`) — Anti-Deadlock
+- **Problema evitado**: Se o caminho HTTP lockar `Wallet -> WagerTransaction` e o worker em lote lockar `WagerTransaction (FOR UPDATE SKIP LOCKED) -> Wallet`, há risco clássico de deadlock AB-BA (`40P01`).
+- **Desenho adotado**:
+  1. **Descoberta leve (sem lock)**: `findDuePendingCandidates` lê apenas `(id, wallet_id)` das linhas `PENDING_REFERENCE` vencidas.
+  2. **Ordem global única `Wallet -> WagerTransaction`**: Para cada candidato, o worker abre uma transação curta por transação:
+     - **1º Lock**: `findByIdForUpdate(tx, walletId)` (`SELECT ... FROM wallets WHERE id = ? FOR UPDATE`) — idêntico ao caminho HTTP.
+     - **2º Lock**: `findPendingByIdForUpdate(tx, txId)` (`SELECT id FROM wager_transactions WHERE id = ? AND status = 'PENDING_REFERENCE' FOR UPDATE SKIP LOCKED`). Se outro worker já processou/mudou o status, retorna `skipped` imediatamente.
+- **Evidência em teste de estresse**: O teste `deadlock stress test` (tráfego HTTP paralelo de `BET`/`WIN`/`REFUND`/`ROLLBACK` disputando as mesmas carteiras enquanto 2 loops de worker rodam em paralelo) completou com **zero deadlocks (`40P01`)** e `wallet.balance == ledgerBalance` em 100% das carteiras.
+
+### 6.4. Consultas e Reconciliação (`Decisão 5A`)
+- **Paginação opaca do ledger (`GET /wallets/:walletId/ledger?cursor=...&limit=50`)**: `LedgerCursorCodec` codifica `{ t: createdAt, id }` em `base64url` usando keyset pagination `(created_at, id) < (cursor.t, cursor.id)` sobre o índice `idx_ledger_wallet_created_id`, mantendo estabilidade sob inserções concorrentes.
+- **Reconciliação (`POST /wallets/:walletId/reconciliation`)**: Adquire `findByIdForUpdate` na carteira para obter snapshot consistente com `wallet_ledger_entries`, soma entradas com `Money`, e retorna `storedBalance`, `calculatedBalance`, `difference` (incluindo diferença negativa quando `stored < calculated`), `consistent` e `checkedEntries`. Divergências emitem log estruturado `wallet_reconciliation_mismatch` sem corrigir silenciosamente o banco.
+
+### 6.5. Pontos que um Avaliador Pode Questionar
+1. **Concorrência de dois `REFUND`s em `PENDING_REFERENCE` antes da `BET` chegar**: Ambos retornam `202 PENDING_REFERENCE` inicialmente (pois `reference_transaction_id` ainda é nulo); quando a `BET` chega e o worker executa na ordem `Wallet -> WagerTransaction`, o 1º `REFUND` torna-se `PROCESSED` e o 2º torna-se `REJECTED` (`REFERENCE_ALREADY_REVERSED`) de forma auditável.
+2. **Descoberta sem lock no worker em múltiplas réplicas**: Duas réplicas podem selecionar o mesmo candidato na leitura inicial, mas a 1ª que adquirir o lock da `Wallet` processa e a 2ª sai `skipped` no `SELECT ... FOR UPDATE SKIP LOCKED` (zero duplicação, ao custo de no máximo uma leitura descartada).
+3. **`REFUND` + `ROLLBACK` permitidos na mesma `BET`**: Seguimos literalmente a regra da Seção 7 (*"não pode ser revertida duas vezes pelo mesmo tipo de operação"*) e `uq_wager_tx_single_reversal_per_kind (reference_transaction_id, kind)`. Em integrações onde `REFUND` e `ROLLBACK` sobre a mesma `BET` fossem mutuamente exclusivos, bastaria remover `kind` da chave do índice único parcial.
+4. **Custo de `findAllByWallet` na reconciliação**: Para carteiras com histórico muito longo (milhões de entradas), a reconciliação poderia evoluir para agregação `SUM(CASE WHEN direction='CREDIT' THEN amount ELSE -amount END)` no PostgreSQL ou checkpoints periódicos — aqui mantivemos o cálculo explícito sobre as entradas via `Money` para validar também `checkedEntries` sem `number`.
