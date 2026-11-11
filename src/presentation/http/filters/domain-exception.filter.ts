@@ -4,17 +4,21 @@ import {
   type ExceptionFilter,
   HttpException,
   HttpStatus,
+  Inject,
 } from '@nestjs/common';
 import {
   ApplicationError,
   DuplicateWalletError,
   ExternalTransactionConflictError,
   IdempotencyConflictError,
+  LOGGER_PORT,
+  type StructuredLoggerPort,
   TransactionNotFoundError,
   TransientInfrastructureError,
   ValidationApplicationError,
   WalletNotFoundError,
 } from '../../../application/index';
+import { extractSqlState, sanitizeErrorMessage } from './sanitize-error-message';
 
 interface HttpResponse {
   setHeader(name: string, value: string): void;
@@ -37,6 +41,8 @@ interface ErrorResponseBody {
 
 @Catch()
 export class DomainExceptionFilter implements ExceptionFilter {
+  constructor(@Inject(LOGGER_PORT) private readonly logger: StructuredLoggerPort) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<HttpResponse>();
@@ -137,15 +143,13 @@ export class DomainExceptionFilter implements ExceptionFilter {
       };
     }
 
-    console.error(
-      JSON.stringify({
-        level: 'error',
-        event: 'unhandled_http_exception',
-        errorName: exception instanceof Error ? exception.name : typeof exception,
-        errorMessage: exception instanceof Error ? exception.message : String(exception),
-        timestamp: new Date().toISOString(),
-      }),
-    );
+    this.logger.error('unhandled_http_exception', {
+      errorName: exception instanceof Error ? exception.name : typeof exception,
+      sqlState: extractSqlState(exception),
+      errorMessage: sanitizeErrorMessage(
+        exception instanceof Error ? exception.message : String(exception),
+      ),
+    });
 
     return {
       statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
