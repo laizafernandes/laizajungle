@@ -19,7 +19,9 @@ Serviço financeiro distribuído para processamento de transações de apostas (
    ```
 
 2. **(Opcional) Crie o arquivo `.env` a partir do template**:
-   > O projeto já possui defaults idênticos ao `.env.example` em `src/infrastructure/config/env.config.ts`, funcionando out-of-the-box mesmo sem `.env`. Caso a porta `5432` já esteja ocupada na sua máquina, ajuste `DB_PORT` no `.env` (o `docker-compose.yml` e os testes respeitam a mesma variável).
+   > O projeto já possui defaults idênticos ao `.env.example` em `src/infrastructure/config/env.config.ts`, funcionando out-of-the-box mesmo sem `.env`.
+   >
+   > **Conflito na porta `5432` do PostgreSQL**: se a porta `5432` do host já estiver ocupada por outro Postgres local ou container, defina `DB_PORT` (ex.: `DB_PORT=5434`) no `.env` ou nas variáveis de ambiente do shell. Tanto o `docker-compose.yml` (`${DB_PORT:-5432}:5432`) quanto as migrations e todos os testes respeitam `DB_PORT`.
    ```bash
    cp .env.example .env
    ```
@@ -34,11 +36,13 @@ Serviço financeiro distribuído para processamento de transações de apostas (
    - `wager-events.fifo` (Fila FIFO dedicada para publicação dos eventos de integração do Outbox)
 
 4. **Aplique as migrations e valide o projeto**:
+   > Use **`bun run test`** (e não `bun test` direto sem filtro): `bun test` dispara todos os arquivos em `test/` simultaneamente contra o mesmo PostgreSQL/LocalStack, enquanto os scripts `bun run test*` aguardam a infraestrutura e executam cada suíte de forma isolada e sequencial.
    ```bash
    bun run migration:up
    bun run lint
    bun run typecheck
-   bun test
+   bun run build
+   bun run test
    bun run test:concurrency
    bun run test:load
    ```
@@ -63,7 +67,7 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 | `bun run infra:up` | Sobe containers Docker e aguarda healthchecks (`--wait`) |
 | `bun run infra:down` | Remove containers e volumes (`docker compose down -v`) |
 | `bun run infra:wait` | Aguarda ativamente PostgreSQL e filas SQS ficarem prontos |
-| `bun test` | Executa suíte de testes unitários + integração |
+| `bun run test` | Executa em sequência `test:unit` + `test:integration` |
 | `bun run test:unit` | Executa apenas testes unitários (`test/unit`) |
 | `bun run test:integration` | Aguarda infraestrutura e executa testes de integração reais (`test/integration`) |
 | `bun run test:concurrency` | Aguarda infraestrutura e executa testes de concorrência (`test/concurrency`) |
