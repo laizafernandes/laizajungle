@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   type FailureCode,
   LedgerDirection,
@@ -141,7 +142,9 @@ export class WagerTransaction {
       'internal',
       externalId,
       `internal:opening:${props.walletId}`,
-      `opening:${props.walletId}:${props.money.amount}:${props.money.currency}`,
+      createHash('sha256')
+        .update(`opening:${props.walletId}:${props.money.amount}:${props.money.currency}`)
+        .digest('hex'),
       props.walletId,
       props.playerId,
       `opening:${props.walletId}`,
