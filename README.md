@@ -1,4 +1,4 @@
-# Distributed Wagering Processor 🦧
+# Distributed Wagering Processor
 
 Serviço financeiro distribuído para processamento de transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores de jogos, construído com **Bun 1.x**, **TypeScript (strict mode)**, **NestJS**, **MikroORM**, **PostgreSQL 16** e **AWS SQS (LocalStack)**.
 
@@ -147,7 +147,6 @@ Serviço financeiro distribuído para processamento de transações de apostas (
 │   ├── unit/                      # Testes de unidade isolados e rápidos
 │   ├── integration/               # Testes de integração com PostgreSQL e LocalStack reais
 │   └── concurrency/               # Testes de corrida e paralelismo real (HTTP + SQS + Outbox)
-├── AGENTS.md                      # Regras fixas e fluxo de trabalho por sprint
 ├── ARCHITECTURE.md                # Decisões arquiteturais, trade-offs e justificativas
 └── docker-compose.yml             # Orquestração local com imagens fixadas
 ```

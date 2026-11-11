@@ -47,7 +47,7 @@ async function expectPgError(
   }
 }
 
-describe('Sprint 1 — PostgreSQL Schema Constraints, Trigger & Migration Reversibility', () => {
+describe('PostgreSQL Schema Constraints, Trigger & Migration Reversibility', () => {
   let orm: MikroORM;
 
   beforeAll(async () => {

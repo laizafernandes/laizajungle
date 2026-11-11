@@ -5,7 +5,7 @@ import {
   PrometheusMetricsRegistry,
 } from '../../src/infrastructure/observability/index';
 
-describe('Sprint 6 — Observability: Structured Logger & Metrics Registry (Unit)', () => {
+describe('Observability: Structured Logger & Metrics Registry (Unit)', () => {
   it('emits structured JSON with required correlation fields and never leaks monetary amounts or secrets', () => {
     const captured: string[] = [];
     const logger = new JsonStructuredLogger({

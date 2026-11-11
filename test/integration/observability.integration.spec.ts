@@ -26,7 +26,7 @@ import { SQS_CLIENT_TOKEN } from '../../src/infrastructure/messaging/sqs.client'
 import type { JsonStructuredLogger } from '../../src/infrastructure/observability/json-structured-logger';
 import { SqsWagerConsumerService } from '../../src/presentation/sqs/sqs-wager-consumer.service';
 
-describe('Sprint 6 — Observability Integration: Structured Logs without Monetary Data, Metrics & Health (Real Postgres + LocalStack)', () => {
+describe('Observability Integration: Structured Logs without Monetary Data, Metrics & Health (Real Postgres + LocalStack)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;

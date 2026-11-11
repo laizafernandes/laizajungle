@@ -51,7 +51,7 @@ async function waitUntil<T>(
   throw new Error(`waitUntil timed out after ${timeoutMs}ms (${options.label ?? 'condition'})`);
 }
 
-describe('Sprint 5 — SQS FIFO, Persistent Inbox & Transactional Outbox (Real Postgres + LocalStack)', () => {
+describe('SQS FIFO, Persistent Inbox & Transactional Outbox (Real Postgres + LocalStack)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;

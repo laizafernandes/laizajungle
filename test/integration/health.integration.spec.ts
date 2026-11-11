@@ -13,7 +13,7 @@ import type {
 import { loadEnvConfig } from '../../src/infrastructure/config/env.config';
 import { SQS_CLIENT_TOKEN, verifySqsQueues } from '../../src/infrastructure/messaging/sqs.client';
 
-describe('Sprint 0 — Health & Real Infrastructure Integration', () => {
+describe('Health & Real Infrastructure Integration', () => {
   let app: INestApplication;
   let baseUrl: string;
   let em: EntityManager;

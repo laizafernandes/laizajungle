@@ -16,7 +16,7 @@ import {
   WalletLedgerEntry,
 } from '../../src/domain/index';
 
-describe('Sprint 5 — InboxMessage, OutboxMessage & IntegrationEvent (Unit)', () => {
+describe('InboxMessage, OutboxMessage & IntegrationEvent (Unit)', () => {
   it('validates InboxMessage lifecycle and payloadHash matching', () => {
     expect(() =>
       InboxMessage.receive({

@@ -70,7 +70,7 @@ async function assertWalletMatchesLedger(orm: MikroORM, walletId: string): Promi
   return walletBalance ?? '0.00';
 }
 
-describe('Sprint 5 — Concurrent SQS Consumers & Outbox Publishers (Real Postgres + LocalStack)', () => {
+describe('Concurrent SQS Consumers & Outbox Publishers (Real Postgres + LocalStack)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;

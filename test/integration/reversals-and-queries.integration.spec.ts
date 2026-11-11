@@ -19,7 +19,7 @@ interface ErrorBody {
   message: string;
 }
 
-describe('Sprint 4 — Reversals, PENDING_REFERENCE, Queries & Reconciliation (Real Postgres)', () => {
+describe('Reversals, PENDING_REFERENCE, Queries & Reconciliation (Real Postgres)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;

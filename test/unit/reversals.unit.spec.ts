@@ -10,7 +10,7 @@ import {
   WagerTransactionStatus,
 } from '../../src/domain/index';
 
-describe('Sprint 4 — Reversal Rules, Backoff Policy & Cursor Codec (Unit)', () => {
+describe('Reversal Rules, Backoff Policy & Cursor Codec (Unit)', () => {
   it('computes exponential backoff capped at maxDelayMs and detects exhaustion by attempts or TTL', () => {
     const policy = new PendingReferencePolicy({
       baseDelayMs: 100,

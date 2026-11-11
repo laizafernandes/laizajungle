@@ -15,7 +15,7 @@ interface ErrorBody {
   message: string;
 }
 
-describe('Sprint 2 — HTTP Wagering Flow & Persistent Idempotency (Real Postgres)', () => {
+describe('HTTP Wagering Flow & Persistent Idempotency (Real Postgres)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;

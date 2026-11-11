@@ -106,7 +106,7 @@ async function assertWalletMatchesLedger(
   };
 }
 
-describe('Sprint 3 — Real Concurrency & Per-Wallet Locking (Real Postgres)', () => {
+describe('Real Concurrency & Per-Wallet Locking (Real Postgres)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;

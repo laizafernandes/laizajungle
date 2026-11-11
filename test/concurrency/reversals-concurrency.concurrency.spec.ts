@@ -53,7 +53,7 @@ async function assertWalletMatchesLedger(orm: MikroORM, walletId: string): Promi
   return walletBalance ?? '0.00';
 }
 
-describe('Sprint 4 — Reversals, PENDING_REFERENCE Workers & Deadlock Stress (Real Postgres)', () => {
+describe('Reversals, PENDING_REFERENCE Workers & Deadlock Stress (Real Postgres)', () => {
   let app: INestApplication;
   let baseUrl: string;
   let orm: MikroORM;
